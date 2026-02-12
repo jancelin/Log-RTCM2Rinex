@@ -52,7 +52,9 @@ while true; do
   STR2STR_RECONNECT_MS="${STR2STR_RECONNECT_MS:-10000}"
   STR2STR_TRACE_LEVEL="${STR2STR_TRACE_LEVEL:-2}"
   RTCM_ROTATE_HOURS="${RTCM_ROTATE_HOURS:-1}"
-  RTCM_SWAP_MARGIN_S="${RTCM_SWAP_MARGIN_S:-10}"
+  # RTKLIB str2str swap margin (-f). If >0, str2str overlaps data during file rotation,
+  # which can create duplicated epochs when RTCM chunks are later concatenated.
+  RTCM_SWAP_MARGIN_S="${RTCM_SWAP_MARGIN_S:-0}"
   RTCM_SUFFIX="${RTCM_SUFFIX:-GNSS-1}"
 
   STALE_CHECK_EVERY_SEC="${STALE_CHECK_EVERY_SEC:-60}"
@@ -119,3 +121,4 @@ while true; do
   evt "str2str exited -> restart in 5s"
   sleep 5
 done
+

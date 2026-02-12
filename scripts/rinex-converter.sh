@@ -8,8 +8,88 @@ source /opt/scripts/lib.sh
 PUB_ROOT="${PUB_ROOT:-/data/pub}"
 EVENTS_DIR="$PUB_ROOT/logs/events"
 mkdir -p "$EVENTS_DIR"
+HB_FILE="$EVENTS_DIR/converter.heartbeat"
+STATUS_FILE="$EVENTS_DIR/converter.status.json"
 
 logc() { echo "[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] converter $*" | tee -a "$EVENTS_DIR/converter.log"; }
+
+heartbeat() {
+  local now
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf "%s\n" "$now" > "$HB_FILE.tmp" 2>/dev/null || true
+  mv -f "$HB_FILE.tmp" "$HB_FILE" 2>/dev/null || true
+  # lightweight JSON status for external monitoring
+  printf '{"ts":"%s","last_hour":"%s","last_day":"%s"}\n' "$now" "${last_hour_key:-}" "${last_day_key:-}" > "$STATUS_FILE.tmp" 2>/dev/null || true
+  mv -f "$STATUS_FILE.tmp" "$STATUS_FILE" 2>/dev/null || true
+}
+
+run_station_jobs() {
+  local mode="$1"; shift
+  local max="${CONVERT_PARALLEL:-2}"
+  if ! [[ "$max" =~ ^[0-9]+$ ]]; then max=2; fi
+  (( max < 1 )) && max=1
+
+  local -a pids=()
+  local line mp rid
+
+  for line in "$@"; do
+    read -r mp rid <<<"$line"
+    [[ -z "$mp" ]] && continue
+    [[ -z "${rid:-}" ]] && rid="$mp"
+
+    if [[ "$mode" == "hourly" ]]; then
+      ( convert_hourly_for_station "$mp" "$rid" || true ) &
+    else
+      ( convert_daily_for_station "$mp" "$rid" || true ) &
+    fi
+
+    pids+=("$!")
+
+    while (( ${#pids[@]} >= max )); do
+      wait -n || true
+      # prune finished
+      local -a alive=()
+      local pid
+      for pid in "${pids[@]}"; do
+        kill -0 "$pid" 2>/dev/null && alive+=("$pid")
+      done
+      pids=("${alive[@]}")
+    done
+  done
+
+  local pid
+  for pid in "${pids[@]}"; do
+    wait "$pid" || true
+  done
+}
+
+cleanup_old() {
+  local rtcm_days="${RTCM_RETENTION_DAYS:-0}"
+  local trace_days="${TRACE_RETENTION_DAYS:-0}"
+  local events_days="${EVENTS_RETENTION_DAYS:-0}"
+  local tmp_days="${TMP_RETENTION_DAYS:-0}"
+
+  if [[ "$rtcm_days" =~ ^[0-9]+$ ]] && (( rtcm_days > 0 )); then
+    logc "CLEAN rtcm_raw files older than ${rtcm_days} days"
+    find "$PUB_ROOT/rtcm_raw" -type f -name '*.rtcm' -mtime +"$rtcm_days" -print -delete 2>/dev/null || true
+    find "$PUB_ROOT/rtcm_raw" -type d -empty -delete 2>/dev/null || true
+  fi
+
+  if [[ "$trace_days" =~ ^[0-9]+$ ]] && (( trace_days > 0 )); then
+    logc "CLEAN traces older than ${trace_days} days"
+    find "$PUB_ROOT/logs/traces" -type f -mtime +"$trace_days" -print -delete 2>/dev/null || true
+  fi
+
+  if [[ "$events_days" =~ ^[0-9]+$ ]] && (( events_days > 0 )); then
+    logc "CLEAN event logs older than ${events_days} days"
+    find "$PUB_ROOT/logs/events" -type f -name '*.log' -mtime +"$events_days" -print -delete 2>/dev/null || true
+  fi
+
+  if [[ "$tmp_days" =~ ^[0-9]+$ ]] && (( tmp_days > 0 )); then
+    logc "CLEAN tmp older than ${tmp_days} days"
+    find "$PUB_ROOT/tmp" -type f -mtime +"$tmp_days" -print -delete 2>/dev/null || true
+  fi
+}
 
 load_cfg() {
   if [[ -f /config/.env ]]; then
@@ -127,6 +207,30 @@ patch_rinex_header() {
   ' "$rnx" > "${rnx}.patched"
 
   mv -f "${rnx}.patched" "$rnx"
+}
+
+# Deduplicate RINEX epochs (keeps first occurrence, drops subsequent duplicate blocks).
+# This is a safety net for upstream overlaps, e.g. RTKLIB str2str "swap margin" (-f)
+# or any RTCM concatenation that repeats the same epoch.
+dedup_rinex_epochs() {
+  local f="$1"
+  [[ "${RINEX_DEDUP_EPOCHS:-true}" == "true" ]] || return 0
+  [[ -s "$f" ]] || return 0
+
+  # Count duplicate epoch headers ('>' records). Key = epoch timestamp only.
+  local dup
+  dup="$(awk 'BEGIN{d=0}
+            /^>/{k=$2" "$3" "$4" "$5" "$6" "$7; if(seen[k]++){d++}}
+            END{print d}' "$f" 2>/dev/null || echo 0)"
+  [[ "${dup:-0}" =~ ^[0-9]+$ ]] || dup=0
+
+  if (( dup > 0 )); then
+    logc "WARN duplicate epochs detected in $(basename "$f") (count=$dup) -> dedup"
+    awk 'BEGIN{keep=1}
+         /^>/{k=$2" "$3" "$4" "$5" "$6" "$7; if(seen[k]++){keep=0}else{keep=1}}
+         {if(keep)print}
+        ' "$f" > "${f}.dedup" && mv -f "${f}.dedup" "$f"
+  fi
 }
 
 # Collect RTCM files around a time window using filename hour buckets
@@ -247,6 +351,7 @@ convert_daily_for_station() {
   fi
 
   patch_rinex_header "$tmp_rnx" "$rtcm_dir"
+  dedup_rinex_epochs "$tmp_rnx"
 
   if [[ "${RINEX_HATANAKA:-true}" == "true" ]]; then
     rnx2crx < "$tmp_rnx" > "$tmp_crx"
@@ -344,6 +449,7 @@ convert_hourly_for_station() {
   fi
 
   patch_rinex_header "$tmp_rnx" "$rtcm_dir"
+  dedup_rinex_epochs "$tmp_rnx"
 
   if [[ "${RINEX_HATANAKA:-true}" == "true" ]]; then
     rnx2crx < "$tmp_rnx" > "$tmp_crx"
@@ -370,6 +476,8 @@ logc "started (schedule: hourly @ HH:${RINEX_HOURLY_AT_MINUTE:-03} UTC; daily @ 
 last_hour_key=""
 last_day_key=""
 
+last_cleanup_key=""
+
 while true; do
   load_cfg
   mapfile -t stations < <(read_stations)
@@ -382,11 +490,7 @@ while true; do
       hour_key="$(date -u -d '1 hour ago' +%Y%m%d%H)"
       if [[ "$hour_key" != "$last_hour_key" ]]; then
         logc "tick hourly: target_hour=$hour_key"
-        for line in "${stations[@]}"; do
-          mp="$(awk '{print $1}' <<<"$line")"
-          rid="$(awk '{print $2}' <<<"$line")"
-          convert_hourly_for_station "$mp" "$rid" || true
-        done
+        run_station_jobs hourly "${stations[@]}"
         last_hour_key="$hour_key"
       fi
     fi
@@ -400,13 +504,23 @@ while true; do
       day_key="$(date -u -d '1 day ago' +%Y%j)"
       if [[ "$day_key" != "$last_day_key" ]]; then
         logc "tick daily: target_day=$day_key"
-        for line in "${stations[@]}"; do
-          mp="$(awk '{print $1}' <<<"$line")"
-          rid="$(awk '{print $2}' <<<"$line")"
-          convert_daily_for_station "$mp" "$rid" || true
-        done
+        run_station_jobs daily "${stations[@]}"
         last_day_key="$day_key"
       fi
+    fi
+  fi
+
+  # heartbeat for healthcheck
+  heartbeat
+
+  # optional cleanup (runs once per UTC day at CLEANUP_AT)
+  cleanup_at="${CLEANUP_AT:-01:10}"
+  now_hm="$(date -u +%H:%M)"
+  if [[ "$now_hm" == "$cleanup_at" ]]; then
+    cleanup_key="$(date -u +%Y%m%d)"
+    if [[ "$cleanup_key" != "$last_cleanup_key" ]]; then
+      cleanup_old || true
+      last_cleanup_key="$cleanup_key"
     fi
   fi
 

@@ -241,6 +241,12 @@ data/pub/logs/events/logger-manager.log
 data/pub/logs/events/converter.log
 ```
 
+## Lancer la fabrication des rinexs hourly à la machine
+
+```
+docker compose exec -u 1000:1000 converter bash -lc '/opt/scripts/rinex-backfill-hourly.sh 2026-02-12'
+```
+
 ---
 
 ## Notes de scalabilité (vers ~1000 stations)

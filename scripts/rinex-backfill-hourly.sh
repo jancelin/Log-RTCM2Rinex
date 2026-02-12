@@ -88,6 +88,27 @@ patch_rinex_header() {
   mv -f "${rnx}.patched" "$rnx"
 }
 
+# Deduplicate RINEX epochs (keeps first occurrence, drops subsequent duplicate blocks).
+dedup_rinex_epochs() {
+  local f="$1"
+  [[ "${RINEX_DEDUP_EPOCHS:-true}" == "true" ]] || return 0
+  [[ -s "$f" ]] || return 0
+
+  local dup
+  dup="$(awk 'BEGIN{d=0}
+            /^>/{k=$2" "$3" "$4" "$5" "$6" "$7; if(seen[k]++){d++}}
+            END{print d}' "$f" 2>/dev/null || echo 0)"
+  [[ "${dup:-0}" =~ ^[0-9]+$ ]] || dup=0
+
+  if (( dup > 0 )); then
+    log "WARN duplicate epochs detected in $(basename "$f") (count=$dup) -> dedup"
+    awk 'BEGIN{keep=1}
+         /^>/{k=$2" "$3" "$4" "$5" "$6" "$7; if(seen[k]++){keep=0}else{keep=1}}
+         {if(keep)print}
+        ' "$f" > "${f}.dedup" && mv -f "${f}.dedup" "$f"
+  fi
+}
+
 collect_files_for_hour() {
   local mp="$1"
   local hour_start_epoch="$2"      # exact HH:00:00 epoch
@@ -198,6 +219,8 @@ for HH in $(seq -w 00 23); do
     fi
 
     patch_rinex_header "$tmp_rnx" "$PUB_ROOT/rtcm_raw/$year/$doy/$mp"
+
+    dedup_rinex_epochs "$tmp_rnx"
 
     rnx2crx < "$tmp_rnx" > "$tmp_crx" || { log "WARN $mp hour=$HH -> rnx2crx failed"; continue; }
     [[ -s "$tmp_crx" ]] || { log "WARN $mp hour=$HH -> empty CRX"; continue; }

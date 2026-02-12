@@ -10,6 +10,12 @@ services:
       - ./config:/config:ro
     command: ["/opt/scripts/logger-manager.sh"]
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/scripts/healthcheck-logger.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   converter:
     build: .
@@ -22,13 +28,19 @@ services:
       - ./config:/config:ro
     command: ["/opt/scripts/rinex-converter.sh"]
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/scripts/healthcheck-converter.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   web:
     image: nginx:1.27-alpine
     container_name: centipede_web
     restart: unless-stopped
     ports:
-      - "81:80"
+      - "${NGINX_PORT:-81}:80"
     volumes:
       - ./data/pub:/srv/pub:ro
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
@@ -38,5 +50,3 @@ services:
       - /var/cache/nginx
       - /var/run
       - /tmp
-
-

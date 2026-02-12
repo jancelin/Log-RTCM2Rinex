@@ -4,6 +4,7 @@ set -euo pipefail
 PUB_ROOT="${PUB_ROOT:-/data/pub}"
 EVENTS_DIR="$PUB_ROOT/logs/events"
 mkdir -p "$EVENTS_DIR"
+HB_FILE="$EVENTS_DIR/logger-manager.heartbeat"
 
 STATIONS_FILE="/config/stations.list"
 POLL_SEC="${POLL_SEC:-5}"
@@ -93,6 +94,9 @@ reconcile
 # Polling robuste (marche même si inotify ne voit pas les bind mounts)
 prev_sig=""
 while true; do
+  # heartbeat (atomic write, safe on NFS)
+  printf "%s\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$HB_FILE.tmp" 2>/dev/null || true
+  mv -f "$HB_FILE.tmp" "$HB_FILE" 2>/dev/null || true
   sig=""
   if [[ -r "$STATIONS_FILE" ]]; then
     sig="$(cksum "$STATIONS_FILE" | awk '{print $1 ":" $2}')"
