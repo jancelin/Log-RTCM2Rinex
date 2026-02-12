@@ -1,257 +1,253 @@
+# Log-RTCM2Rinex — Centipede-RTK logger + archives RINEX
 
-# Logging RTCM (NTRIP) avec `str2str` + conversion en RINEX journalier (RTKLIBExplorer v2.5.0)
+Ce projet exécute dans Docker les outils **RTKLIBExplorer v2.5.0** pour :
+- **logger** des flux RTCM3 depuis un caster NTRIP (`str2str`) en continu (24/7),
+- **convertir** les logs RTCM en **RINEX** (`convbin`),
+- produire des fichiers **Hatanaka** (`rnx2crx`) puis **gzip** pour obtenir des `*.crx.gz`.
 
-Ce guide décrit une procédure simple (manuel + `tmux`) pour :
-1. Installer **RTKLIBExplorer v2.5.0** (`str2str`, `convbin`)
-2. Logger un flux **RTCM3** depuis un caster **NTRIP** avec rotation horaire
-3. Convertir les logs RTCM (segments horaires) en **1 RINEX `.obs` par jour**
-
----
-
-## Pré-requis
-
-- Système : Debian/Ubuntu (apt)
-- Accès internet
-- Droits `root` (ou `sudo`)
-- Identifiants NTRIP et mountpoint
+Tous les temps / noms de fichiers / planifications sont en **UTC** (`TZ=UTC`).
 
 ---
 
-## 1) Installation de `str2str` et `convbin` (RTKLIBExplorer v2.5.0)
+## Produits générés
 
-```bash
-RTKLIB_RELEASE='RTKLIB-2.5.0'
+### 1) RINEX journalier 30s (après minuit UTC + 20 min)
+- **Quand :** tous les jours à **00:20 UTC**
+- **Quoi :** conversion de la **journée précédente** (00:00–23:59 UTC)
+- **Sortie :**
 
-apt-get update
-apt-get install -y git build-essential wget
+```
+data/pub/centipede_30s/YYYY/DOY/
+<RINEX_ID>_S_YYYYDOY0000_01D_30S_MO.crx.gz
+```
 
-wget -qO - https://github.com/rtklibexplorer/RTKLIB/archive/refs/tags/v2.5.0.tar.gz | tar -xvz
+Exemple :
 
-make --directory="${RTKLIB_RELEASE}"/app/consapp/str2str/gcc
-make --directory="${RTKLIB_RELEASE}"/app/consapp/str2str/gcc install
+```
+A00100FRA_S_20260010000_01D_30S_MO.crx.gz
+```
 
-make --directory="${RTKLIB_RELEASE}"/app/consapp/convbin/gcc
-make --directory="${RTKLIB_RELEASE}"/app/consapp/convbin/gcc install
+### 2) RINEX horaire 1s (toutes les heures UTC + 3 min)
+- **Quand :** toutes les heures à **HH:03 UTC**
+- **Quoi :** conversion de **l’heure précédente** (HH-1:00–HH-1:59 UTC) pour avoir une heure complète
+- **Sortie :**
+
+```
+data/pub/centipede_1s/YYYY/DOY/
+<RINEX_ID>_S_YYYYDOYHH00_01H_01S_MO.crx.gz
+```
+
+Exemple (heure 00:00–00:59) :
+
+```
+A00100FRA_S_20260010000_01H_01S_MO.crx.gz
+```
+
+---
+
+## Logs RTCM bruts
+
+Les fichiers RTCM sont stockés par station et par jour (DOY) :
+
+```
+data/pub/rtcm_raw/YYYY/DOY/<MOUNTPOINT>/ <MOUNTPOINT>*YYYY-MM-DD_hh-mm-ss*<SUFFIX>.rtcm
+```
+
+La rotation RTCM est configurable (par défaut **horaire**) via `RTCM_ROTATE_HOURS`.
+
+---
+
+## Structure du projet
+
+```
+.
+├── docker-compose.yml
+├── Dockerfile
+├── config/
+│   ├── .env
+│   └── stations.list
+├── scripts/
+│   ├── entrypoint.sh
+│   ├── lib.sh
+│   ├── logger-manager.sh
+│   ├── station-logger.sh
+│   └── rinex-converter.sh
+└── data/
+    └── pub/
+        ├── centipede_30s/
+        ├── centipede_1s/
+        ├── rtcm_raw/
+        └── logs/
+        ├── events/
+        └── traces/
 ````
 
-Vérifier que les binaires sont disponibles :
+> Important : on monte **`./config/` en répertoire** dans le conteneur (`/config`) pour éviter les problèmes d’“atomic save” (inode) avec les bind-mounts de fichiers.
+
+---
+
+## Prérequis
+
+- Docker + Docker Compose v2
+- Accès réseau au caster NTRIP
+- Espace disque suffisant (RTCM + RINEX)
+- Identifiants NTRIP (si nécessaires)
+
+---
+
+## Démarrage rapide
+
+1) Configure `.env` :
+- `PUID` / `PGID` (pour que les fichiers créés sur l’hôte appartiennent à ton user)
+- `NTRIP_HOST`, `NTRIP_PORT`, `NTRIP_USER`, `NTRIP_PASS`
+- options de robustesse `str2str`
+- options de conversion RINEX
+
+2) Configure `stations.list` :
+- **1 ligne par station**
+- format : `MOUNTPOINT  RINEX_ID`
+
+Exemple :
+```txt
+# mountpoint   rinex_id
+BENGLA1        BENGL01BGD
+CT02           A61300FRA
+````
+
+3. Lancer :
 
 ```bash
-which str2str
-which convbin
-str2str -h | head
-convbin -h | head
+docker compose up -d --build
+```
+
+4. Suivre les logs :
+
+```bash
+docker compose logs -f logger
+docker compose logs -f converter
 ```
 
 ---
 
-## 2) Installation de `tmux`
+## Ajouter / enlever des stations “à chaud”
 
-`tmux` permet de laisser `str2str` tourner en tâche de fond, même si la session SSH est coupée.
+Tu modifies simplement `config/stations.list` :
+
+* **ajout** : ajoute une ligne, sauvegarde → le logger démarre le `str2str` correspondant
+* **suppression** : retire la ligne → le logger stoppe uniquement ce mountpoint
+
+Vérification (conteneur voit bien le fichier) :
 
 ```bash
-apt-get install -y tmux
+docker compose exec logger bash -lc 'cat -n /config/stations.list'
+```
+
+Logs manager :
+
+```
+data/pub/logs/events/logger-manager.log
 ```
 
 ---
 
-## 3) Démarrer une session `tmux` pour la collecte RTCM
+## Variables principales (`config/.env`)
 
-Créer une session dédiée :
+### Identité / droits
 
-```bash
-tmux new -s str2str
-```
+* `TZ=UTC`
+* `PUID=1000`
+* `PGID=1000`
 
+### NTRIP
 
-Créer un nouveau dossier pour stocker les logs rtcm:
+* `NTRIP_HOST=crtk.net`
+* `NTRIP_PORT=2101`
+* `NTRIP_USER=...`
+* `NTRIP_PASS=...`
 
-```bash
-mkdir /mondossier/rtcm
-```
+### Arborescence
 
-Se placer dans le dossier qui servira de stockage des logs :
+* `PUB_ROOT=/data/pub`
+* `RINEX_OUT_ROOT_DAILY=/data/pub/centipede_30s`
+* `RINEX_OUT_ROOT_HOURLY=/data/pub/centipede_1s`
 
-```bash
-cd /mondossier/rtcm
-```
+### Logging RTCM / robustesse
 
+* `RTCM_ROTATE_HOURS=1` (rotation des fichiers RTCM)
+* `RTCM_SWAP_MARGIN_S=10` (option `-f` de `str2str`)
+* `STR2STR_TIMEOUT_MS=10000`
+* `STR2STR_RECONNECT_MS=10000`
+* `STR2STR_TRACE_LEVEL=2`
+* `RTCM_SUFFIX=GNSS-1`
+* watchdog “base down” :
 
-Lancer la collecte du flux RTCM3 via NTRIP avec rotation **horaire** (`S=1`) :
+  * `STALE_CHECK_EVERY_SEC=60`
+  * `STALE_AFTER_SEC=300`
 
-```bash
-str2str \
-  -in  ntrip://centipede:centipede@crtk.net:2101/BENGLA1 \
-  -out file://BENGLA1_%Y-%m-%d_%h-%M-%S_GNSS-1.rtcm::T::S=1 \
-  -f 10
-```
+### Conversion RINEX / compression
 
-### Notes
+* `RINEX_VERSION=3.04`
+* Daily 30s :
 
-* `-in ntrip://user:pass@host:port/MOUNTPOINT` : connexion au caster NTRIP.
-* `-out file://...` : écriture dans un fichier.
-* `%Y-%m-%d_%h-%M-%S` : horodatage dans le nom du fichier.
-* `::S=1` : rotation toutes les **1 heure** (mettre `S=24` pour 24h).
-* `-f 10` : marge liée au swap/rotation (secondes).
+  * `RINEX_DAILY_ENABLE=true`
+  * `RINEX_DAILY_INTERVAL_S=30`
+* Hourly 1s :
 
----
+  * `RINEX_HOURLY_ENABLE=true`
+  * `RINEX_HOURLY_INTERVAL_S=1`
+* Compression :
 
-## 4) Sortir / revenir dans `tmux`
+  * `RINEX_HATANAKA=true`
+  * `RINEX_GZIP=true`
 
-Sortir de la session (laisser tourner en arrière-plan) :
+### Planification UTC
 
-* `Ctrl` + `b`, puis `d`
+* Horaire 1s à **HH:03** :
 
-Revenir dans la session :
+  * `RINEX_HOURLY_AT_MINUTE=3`
+* Journalier 30s à **00:20** :
 
-```bash
-tmux attach -t str2str
-```
-
----
-
-## 5) Conversion : RTCM segmentés → RINEX journalier
-
-Objectif : si ton dossier contient des logs RTCM découpés (ex: 1 fichier/h), produire **un seul** fichier RINEX `.obs` par jour, et **ne pas reconvertir** les jours déjà convertis.
-
-### 5.1 Arborescence recommandée
-
-Dans `/mondossier/` créer un dossier de sortie `rinex` :
-
-```bash
-cd /mondossier
-mkdir -p rinex
-```
-
-### 5.2 Créer le script `rtcm2rinex_daily.sh`
-
-Dans `/mondossier`, créer le fichier de programme :
-
-```bash
-nano rtcm2rinex_daily.sh
-```
-
-Copier-coller le contenu suivant :
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-shopt -s nullglob
-
-IN_DIR="${1:-.}"                # dossier des .rtcm
-OUT_DIR="${2:-$IN_DIR}"         # dossier de sortie des .obs
-STATION="${3:-BENGLA1}"         # station / préfixe
-MARKER="${4:-BENGLA1}"          # convbin -hm
-ANT_HGT="${5:-2.7}"             # convbin -hc
-INTERVAL="${6:-30}"             # convbin -ti (s)
-
-mkdir -p "$OUT_DIR"
-
-# Liste des jours présents (extrait YYYY-MM-DD depuis les noms de fichiers)
-mapfile -t DAYS < <(
-  find "$IN_DIR" -maxdepth 1 -type f -name "*.rtcm" -printf "%f\n" \
-  | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' \
-  | sort -u
-)
-
-if ((${#DAYS[@]}==0)); then
-  echo "Aucun .rtcm trouvé dans $IN_DIR"
-  exit 0
-fi
-
-for day in "${DAYS[@]}"; do
-  out_obs="$OUT_DIR/${STATION}_GNSS-${day}.obs"
-
-  # skip si déjà converti (ou compressé)
-  if [[ -s "$out_obs" || -s "$out_obs.gz" ]]; then
-    echo "[SKIP] $day -> $(basename "$out_obs") (déjà présent)"
-    continue
-  fi
-
-  # Fichiers RTCM de ce jour (tri lexical = OK si timestamp dans le nom)
-  mapfile -t files < <(
-    find "$IN_DIR" -maxdepth 1 -type f -name "*${day}*.rtcm" -printf "%p\n" | sort
-  )
-
-  if ((${#files[@]}==0)); then
-    echo "[WARN] aucun fichier pour $day (pourtant détecté dans la liste) — skip"
-    continue
-  fi
-
-  tmp_rtcm="$(mktemp --tmpdir "${STATION}_${day}_XXXX.rtcm")"
-  tmp_obs="${out_obs}.tmp"
-  trap 'rm -f "$tmp_rtcm" "$tmp_obs"' RETURN
-
-  echo "[CAT ] $day -> $(basename "$tmp_rtcm") (${#files[@]} fichiers)"
-  cat "${files[@]}" > "$tmp_rtcm"
-
-  # convbin attend -ts/-te au format YYYY/MM/DD hh:mm:ss
-  day_slash="${day//-/\/}"
-
-  echo "[RUN ] convbin -> $(basename "$out_obs")"
-  convbin "$tmp_rtcm" \
-    -v 3.04 -r rtcm3 \
-    -hc "$ANT_HGT" -hm "$MARKER" \
-    -f 2 -y J -y S -y C -y I \
-    -od -os -oi -ot -ti "$INTERVAL" -tt 0 \
-    -ts "$day_slash" 00:00:00 -te "$day_slash" 23:59:59 \
-    -o "$tmp_obs"
-
-  mv -f "$tmp_obs" "$out_obs"
-  rm -f "$tmp_rtcm"
-  trap - RETURN
-
-  echo "[OK  ] $out_obs"
-done
-```
-
-### 5.3 Rendre le script exécutable
-
-```bash
-chmod +x rtcm2rinex_daily.sh
-```
-
-### 5.4 Lancer la conversion
-
-Exemple (logs dans `./rtcm` et sortie dans `./rinex`) :
-
-```bash
-./rtcm2rinex_daily.sh ./rtcm ./rinex BENGLA1 BENGLA1 2.7 30
-```
-
-* `./rtcm` : dossier d’entrée contenant les `.rtcm`
-* `./rinex` : dossier de sortie des `.obs`
-* `BENGLA1` : nom station (préfixe de sortie)
-* `BENGLA1` : marker name RINEX (`-hm`)
-* `2.7` : hauteur antenne (`-hc`)
-* `30` : intervalle d’échantillonnage (s) (`-ti`)
+  * `RINEX_DAILY_AT=00:20`
 
 ---
 
-## 6) Contrôles rapides
+## Logs & diagnostic
 
-Lister les logs RTCM :
+### Traces RTKLIB (`str2str`)
 
-```bash
-ls -lh /mondossier/rtcm/*.rtcm | tail
+Un fichier de trace par station :
+
+```
+data/pub/logs/traces/<MOUNTPOINT>/str2str.trace
 ```
 
-Lister les RINEX générés :
+### Événements (pannes, station “stale”, démarrages/arrêts)
 
-```bash
-ls -lh /mondossier/rinex/*.obs | tail
+* par station :
+
+```
+data/pub/logs/events/<MOUNTPOINT>.events.log
 ```
 
-Vérifier qu’un jour déjà converti est bien “skip” :
+* manager :
 
-```bash
-./rtcm2rinex_daily.sh /mondossier/rtcm /mondossier/rinex BENGLA1 BENGLA1 2.7 30
+```
+data/pub/logs/events/logger-manager.log
+```
+
+* converter :
+
+```
+data/pub/logs/events/converter.log
 ```
 
 ---
 
-## 7) Remarques / limites de cette méthode (manuel + tmux)
+## Notes de scalabilité (vers ~1000 stations)
 
-* Cette procédure est idéale pour démarrer vite.
-* Pour plusieurs bases GNSS (~6) et une exécution 24/7, il sera plus robuste de passer à une gestion par services (`systemd`) avec redémarrage automatique, logs centralisés, et 1 instance par mountpoint.
+Ce design fonctionne très bien pour quelques stations à quelques dizaines.s
+Pour **~1000 stations**, attention :
 
+* 1000 processus `str2str` sur une seule machine = très lourd (CPU, IO, fichiers ouverts, réseau).
+* stratégie recommandée : **sharding** (plusieurs hôtes / plusieurs stacks compose) et répartition des stations.
+* surveiller : IO disque, inode, limites `ulimit`, bande passante, stabilité réseau.

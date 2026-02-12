@@ -1,0 +1,42 @@
+services:
+  logger:
+    build: .
+    image: centipede-logger:local
+    container_name: centipede_logger
+    env_file: ./config/.env
+    volumes:
+      - ./data:/data
+      - ./scripts:/opt/scripts:rw
+      - ./config:/config:ro
+    command: ["/opt/scripts/logger-manager.sh"]
+    restart: unless-stopped
+
+  converter:
+    build: .
+    image: centipede-logger:local
+    container_name: centipede_converter
+    env_file: ./config/.env
+    volumes:
+      - ./data:/data
+      - ./scripts:/opt/scripts:rw
+      - ./config:/config:ro
+    command: ["/opt/scripts/rinex-converter.sh"]
+    restart: unless-stopped
+
+  web:
+    image: nginx:1.27-alpine
+    container_name: centipede_web
+    restart: unless-stopped
+    ports:
+      - "81:80"
+    volumes:
+      - ./data/pub:/srv/pub:ro
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/html:/usr/share/nginx/html:ro
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+      - /tmp
+
+
