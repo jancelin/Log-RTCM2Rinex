@@ -10,12 +10,18 @@ fi
 
 # Charge env
 if [[ -f /config/.env ]]; then
+  # shellcheck disable=SC1091
   set -a; source /config/.env; set +a
 fi
 
 PUB_ROOT="${PUB_ROOT:-/data/pub}"
 STATIONS_FILE="/config/stations.list"
 DAY="${1:?Usage: rinex-backfill-hourly.sh YYYY-MM-DD}"
+
+# Pool global de parallélisme (sur toutes les tâches station×heure)
+BACKFILL_PARALLEL="${BACKFILL_PARALLEL:-${CONVERT_PARALLEL:-2}}"
+if ! [[ "$BACKFILL_PARALLEL" =~ ^[0-9]+$ ]]; then BACKFILL_PARALLEL=2; fi
+if (( BACKFILL_PARALLEL < 1 )); then BACKFILL_PARALLEL=1; fi
 
 read_stations() {
   awk '
@@ -25,7 +31,7 @@ read_stations() {
   ' "$STATIONS_FILE"
 }
 
-# fallback if rate_token not provided by lib.sh
+# fallback si rate_token non fourni
 rate_token_fallback() {
   case "$1" in
     1) echo "01S" ;;
@@ -68,27 +74,24 @@ patch_rinex_header() {
 
   local pgm="${RINEX_PGM:-CONVBIN EX 2.5.0}"
   local runby="${RINEX_RUNBY:-CentipedeLogger}"
-  local dt="$(date -u +'%Y%m%d %H%M%S UTC')"
+  local dt
+  dt="$(date -u +'%Y%m%d %H%M%S UTC')"
 
   awk -v pgm="$pgm" -v runby="$runby" -v dt="$dt" -v log_hint="$log_hint" '
     function fmt_pgm() { return sprintf("%-20s%-20s%-20s%-20s", pgm, runby, dt, "PGM / RUN BY / DATE") }
-
     $0 ~ /PGM \/ RUN BY \/ DATE$/ { print fmt_pgm(); next }
-
     $0 ~ /END OF HEADER$/ {
       print sprintf("%-60s%-20s","format: RTCM 3","COMMENT")
       if (log_hint != "") print sprintf("%-60s%-20s","log: " log_hint,"COMMENT")
       print $0
       next
     }
-
     { print $0 }
   ' "$rnx" > "${rnx}.patched"
-
   mv -f "${rnx}.patched" "$rnx"
 }
 
-# Deduplicate RINEX epochs (keeps first occurrence, drops subsequent duplicate blocks).
+# Dédup epochs RINEX (garde le 1er bloc, supprime les suivants)
 dedup_rinex_epochs() {
   local f="$1"
   [[ "${RINEX_DEDUP_EPOCHS:-true}" == "true" ]] || return 0
@@ -111,8 +114,8 @@ dedup_rinex_epochs() {
 
 collect_files_for_hour() {
   local mp="$1"
-  local hour_start_epoch="$2"      # exact HH:00:00 epoch
-  local edge_hours="${3:-1}"       # include +/- edge_hours
+  local hour_start_epoch="$2"
+  local edge_hours="${3:-1}"
 
   local -a epochs=()
   local i
@@ -138,6 +141,7 @@ collect_files_for_hour() {
   printf '%s\n' "${files[@]}"
 }
 
+# ---- Paramètres globaux ----
 INTERVAL="${RINEX_HOURLY_INTERVAL_S:-1}"
 if command -v rate_token >/dev/null 2>&1; then
   RATE="$(rate_token "$INTERVAL")"
@@ -153,7 +157,83 @@ EDGE="${RINEX_HOURLY_EDGE_HOURS:-1}"
 TODAY="$(date -u +%F)"
 NOWH="$(date -u +%H)"
 
-# boucle 00..23
+process_station_hour() {
+  local mp="$1"
+  local rid="$2"
+  local HH="$3"
+  local hour_start_epoch="$4"
+  local year="$5"
+  local doy="$6"
+  local ymd_slash="$7"
+
+  local out_dir="$OUT_ROOT/$year/$doy"
+  mkdir -p "$out_dir"
+
+  local base out
+  base="${rid}_S_${year}${doy}${HH}00_01H_${RATE}_MO"
+  out="$out_dir/${base}.crx.gz"
+  [[ -s "$out" ]] && return 0
+
+  local -a files=()
+  mapfile -t files < <(collect_files_for_hour "$mp" "$hour_start_epoch" "$EDGE" || true)
+  ((${#files[@]} > 0)) || return 0
+
+  local tmp_root
+  tmp_root="$(pick_tmp_root)" || { log "ERR  $mp hour=$HH -> no writable tmp dir"; return 0; }
+
+  local tmp_rtcm tmp_rnx tmp_crx
+  tmp_rtcm="$(mktemp -p "$tmp_root" "${mp}_${year}${doy}_${HH}_XXXX.rtcm")"
+  tmp_rnx="$(mktemp -p "$tmp_root" "${mp}_${year}${doy}_${HH}_XXXX.rnx")"
+  tmp_crx="$(mktemp -p "$tmp_root" "${mp}_${year}${doy}_${HH}_XXXX.crx")"
+
+  cleanup() { rm -f "$tmp_rtcm" "$tmp_rnx" "$tmp_crx" 2>/dev/null || true; }
+  trap cleanup EXIT
+
+  log "CAT  $mp $DAY hour=$HH (${#files[@]} files)"
+  cat "${files[@]}" > "$tmp_rtcm"
+
+  local ant_hgt
+  ant_hgt="${RINEX_ANT_HGT_DEFAULT:-2.7}"
+  local -a hd_args=()
+  [[ -n "${ant_hgt:-}" ]] && hd_args=(-hd "${ant_hgt}/0/0")
+
+  log "RUN  convbin $mp $DAY hour=$HH -> $base"
+  if ! convbin "$tmp_rtcm" \
+      -v "$RINEX_VER" -r rtcm3 \
+      -hm "$rid" -hn "$mp" \
+      -f "$FREQ" \
+      "${hd_args[@]}" \
+      -os \
+      -ti "$INTERVAL" -tt 0 \
+      -ts "$ymd_slash" "${HH}:00:00" -te "$ymd_slash" "${HH}:59:59" \
+      -o "$tmp_rnx"
+  then
+    log "WARN $mp hour=$HH -> convbin failed — skip"
+    return 0
+  fi
+
+  if [[ ! -s "$tmp_rnx" ]] || ! grep -q "END OF HEADER" "$tmp_rnx" || ! grep -qE '^>' "$tmp_rnx"; then
+    log "WARN $mp hour=$HH -> empty/no epochs — skip"
+    return 0
+  fi
+
+  patch_rinex_header "$tmp_rnx" "$PUB_ROOT/rtcm_raw/$year/$doy/$mp"
+  dedup_rinex_epochs "$tmp_rnx"
+
+  rnx2crx < "$tmp_rnx" > "$tmp_crx" || { log "WARN $mp hour=$HH -> rnx2crx failed"; return 0; }
+  [[ -s "$tmp_crx" ]] || { log "WARN $mp hour=$HH -> empty CRX"; return 0; }
+
+  atomic_write_gzip "$tmp_crx" "$out"
+  log "OK   $mp hour=$HH -> $(basename "$out")"
+}
+
+# ---- Backfill global pool station×heure ----
+mapfile -t stations < <(read_stations)
+log "TASKPOOL day=${DAY} stations=${#stations[@]} parallel=${BACKFILL_PARALLEL}"
+
+pids=()
+tasks=0
+
 for HH in $(seq -w 00 23); do
   # si DAY == aujourd’hui, ne pas traiter l’heure courante/future (sauf override)
   if [[ "$DAY" == "$TODAY" && "${ALLOW_PARTIAL_TODAY:-false}" != "true" ]]; then
@@ -167,66 +247,31 @@ for HH in $(seq -w 00 23); do
   doy="$(date -u -d "@$hour_start_epoch" +%j)"
   ymd_slash="$(date -u -d "@$hour_start_epoch" +%Y/%m/%d)"
 
-  mapfile -t stations < <(read_stations)
-
   for line in "${stations[@]}"; do
     mp="$(awk '{print $1}' <<<"$line")"
     rid="$(awk '{print $2}' <<<"$line")"
+    [[ -n "${mp:-}" ]] || continue
+    [[ -n "${rid:-}" ]] || rid="$mp"
 
-    out_dir="$OUT_ROOT/$year/$doy"
-    mkdir -p "$out_dir"
+    process_station_hour "$mp" "$rid" "$HH" "$hour_start_epoch" "$year" "$doy" "$ymd_slash" &
+    pids+=("$!")
+    ((tasks++)) || true
 
-    base="${rid}_S_${year}${doy}${HH}00_01H_${RATE}_MO"
-    out="$out_dir/${base}.crx.gz"
-    [[ -s "$out" ]] && continue
-
-    mapfile -t files < <(collect_files_for_hour "$mp" "$hour_start_epoch" "$EDGE" || true)
-    ((${#files[@]} > 0)) || continue
-
-    tmp_root="$(pick_tmp_root)" || { log "ERR  $mp hour=$HH -> no writable tmp dir"; continue; }
-
-    tmp_rtcm="$(mktemp -p "$tmp_root" "${mp}_${year}${doy}_${HH}_XXXX.rtcm")"
-    tmp_rnx="$(mktemp -p "$tmp_root" "${mp}_${year}${doy}_${HH}_XXXX.rnx")"
-    tmp_crx="$(mktemp -p "$tmp_root" "${mp}_${year}${doy}_${HH}_XXXX.crx")"
-    trap 'rm -f "$tmp_rtcm" "$tmp_rnx" "$tmp_crx"' RETURN
-
-    log "CAT  $mp $DAY hour=$HH (${#files[@]} files)"
-    cat "${files[@]}" > "$tmp_rtcm"
-
-    # RENAG-like: MARKER NAME = rid ; MARKER NUMBER = mp
-    ant_hgt="${RINEX_ANT_HGT_DEFAULT:-2.7}"
-    hd_args=()
-    [[ -n "${ant_hgt:-}" ]] && hd_args=(-hd "${ant_hgt}/0/0")
-
-    log "RUN  convbin $mp $DAY hour=$HH -> $base"
-    if ! convbin "$tmp_rtcm" \
-      -v "$RINEX_VER" -r rtcm3 \
-      -hm "$rid" -hn "$mp" \
-      -f "$FREQ" \
-      "${hd_args[@]}" \
-      -os \
-      -ti "$INTERVAL" -tt 0 \
-      -ts "$ymd_slash" "${HH}:00:00" -te "$ymd_slash" "${HH}:59:59" \
-      -o "$tmp_rnx"
-    then
-      log "WARN $mp hour=$HH -> convbin failed — skip"
-      continue
-    fi
-
-    if [[ ! -s "$tmp_rnx" ]] || ! grep -q "END OF HEADER" "$tmp_rnx" || ! grep -qE '^>' "$tmp_rnx"; then
-      log "WARN $mp hour=$HH -> empty/no epochs — skip"
-      continue
-    fi
-
-    patch_rinex_header "$tmp_rnx" "$PUB_ROOT/rtcm_raw/$year/$doy/$mp"
-
-    dedup_rinex_epochs "$tmp_rnx"
-
-    rnx2crx < "$tmp_rnx" > "$tmp_crx" || { log "WARN $mp hour=$HH -> rnx2crx failed"; continue; }
-    [[ -s "$tmp_crx" ]] || { log "WARN $mp hour=$HH -> empty CRX"; continue; }
-
-    atomic_write_gzip "$tmp_crx" "$out"
-    log "OK   $mp hour=$HH -> $(basename "$out")"
+    # throttle pool
+    while (( ${#pids[@]} >= BACKFILL_PARALLEL )); do
+      if wait -n 2>/dev/null; then :; else wait "${pids[0]}" || true; fi
+      alive=()
+      for pid in "${pids[@]}"; do
+        kill -0 "$pid" 2>/dev/null && alive+=("$pid")
+      done
+      pids=("${alive[@]}")
+    done
   done
 done
+
+for pid in "${pids[@]}"; do
+  wait "$pid" || true
+done
+
+log "DONE tasks=${tasks}"
 
