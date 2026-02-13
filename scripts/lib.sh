@@ -41,6 +41,50 @@ mp_key() {
   echo "$1" | tr '[:lower:]' '[:upper:]' | sed -E 's/[^A-Z0-9]+/_/g'
 }
 
+# ----------------------
+# Logging helpers
+#
+# Convention: smaller = more important
+#   ERROR=0, WARN=1, INFO=2, DEBUG=3
+#
+# Usage:
+#   if log_should "INFO" "${LOG_LEVEL:-INFO}"; then ...; fi
+# ----------------------
+
+log_level_num() {
+  local v="${1:-INFO}"
+  v="${v^^}"
+  case "$v" in
+    0|ERROR) echo 0 ;;
+    1|WARN|WARNING) echo 1 ;;
+    2|INFO) echo 2 ;;
+    3|DEBUG) echo 3 ;;
+    *)
+      if [[ "$v" =~ ^[0-9]+$ ]]; then
+        echo "$v"
+      else
+        echo 2
+      fi
+      ;;
+  esac
+}
+
+log_should() {
+  local msg_level="${1:-INFO}"
+  local threshold="${2:-INFO}"
+  local m t
+  m="$(log_level_num "$msg_level")"
+  t="$(log_level_num "$threshold")"
+  (( m <= t ))
+}
+
+bool_is_true() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|y|Y|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # read per-station override: STATION_<MP>_<FIELD>
 station_var() {
   local mp="$1" field="$2"

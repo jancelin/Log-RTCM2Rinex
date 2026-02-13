@@ -11,7 +11,51 @@ mkdir -p "$EVENTS_DIR"
 HB_FILE="$EVENTS_DIR/converter.heartbeat"
 STATUS_FILE="$EVENTS_DIR/converter.status.json"
 
-logc() { echo "[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] converter $*" | tee -a "$EVENTS_DIR/converter.log"; }
+logc() {
+  local lvl="INFO"
+  local first=""
+  if (( $# > 0 )); then
+    first="${1%% *}"
+  fi
+
+  case "$first" in
+    0|ERROR|ERR)
+      lvl="ERROR"
+      if [[ "$1" == "$first" ]]; then
+        shift || true
+      else
+        set -- "${1#${first} }" "${@:2}"
+      fi
+      ;;
+    1|WARN|WARNING)
+      lvl="WARN"
+      if [[ "$1" == "$first" ]]; then
+        shift || true
+      else
+        set -- "${1#${first} }" "${@:2}"
+      fi
+      ;;
+    2|INFO)
+      lvl="INFO"
+      if [[ "$1" == "$first" ]]; then
+        shift || true
+      else
+        set -- "${1#${first} }" "${@:2}"
+      fi
+      ;;
+    3|DEBUG)
+      lvl="DEBUG"
+      if [[ "$1" == "$first" ]]; then
+        shift || true
+      else
+        set -- "${1#${first} }" "${@:2}"
+      fi
+      ;;
+  esac
+  local threshold="${LOG_LEVEL:-INFO}"
+  log_should "$lvl" "$threshold" || return 0
+  echo "[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] converter $lvl $*" | tee -a "$EVENTS_DIR/converter.log"
+}
 
 heartbeat() {
   local now
@@ -70,24 +114,28 @@ cleanup_old() {
   local tmp_days="${TMP_RETENTION_DAYS:-0}"
 
   if [[ "$rtcm_days" =~ ^[0-9]+$ ]] && (( rtcm_days > 0 )); then
-    logc "CLEAN rtcm_raw files older than ${rtcm_days} days"
-    find "$PUB_ROOT/rtcm_raw" -type f -name '*.rtcm' -mtime +"$rtcm_days" -print -delete 2>/dev/null || true
+    local n
+    n="$(find "$PUB_ROOT/rtcm_raw" -type f -name '*.rtcm' -mtime +"$rtcm_days" -print -delete 2>/dev/null | wc -l | tr -d ' ')" || n=0
+    logc INFO "CLEAN rtcm_raw >${rtcm_days}d -> deleted=${n}"
     find "$PUB_ROOT/rtcm_raw" -type d -empty -delete 2>/dev/null || true
   fi
 
   if [[ "$trace_days" =~ ^[0-9]+$ ]] && (( trace_days > 0 )); then
-    logc "CLEAN traces older than ${trace_days} days"
-    find "$PUB_ROOT/logs/traces" -type f -mtime +"$trace_days" -print -delete 2>/dev/null || true
+    local n
+    n="$(find "$PUB_ROOT/logs/traces" -type f -mtime +"$trace_days" -print -delete 2>/dev/null | wc -l | tr -d ' ')" || n=0
+    logc INFO "CLEAN traces >${trace_days}d -> deleted=${n}"
   fi
 
   if [[ "$events_days" =~ ^[0-9]+$ ]] && (( events_days > 0 )); then
-    logc "CLEAN event logs older than ${events_days} days"
-    find "$PUB_ROOT/logs/events" -type f -name '*.log' -mtime +"$events_days" -print -delete 2>/dev/null || true
+    local n
+    n="$(find "$PUB_ROOT/logs/events" -type f -name '*.log' -mtime +"$events_days" -print -delete 2>/dev/null | wc -l | tr -d ' ')" || n=0
+    logc INFO "CLEAN events >${events_days}d -> deleted=${n}"
   fi
 
   if [[ "$tmp_days" =~ ^[0-9]+$ ]] && (( tmp_days > 0 )); then
-    logc "CLEAN tmp older than ${tmp_days} days"
-    find "$PUB_ROOT/tmp" -type f -mtime +"$tmp_days" -print -delete 2>/dev/null || true
+    local n
+    n="$(find "$PUB_ROOT/tmp" -type f -mtime +"$tmp_days" -print -delete 2>/dev/null | wc -l | tr -d ' ')" || n=0
+    logc INFO "CLEAN tmp >${tmp_days}d -> deleted=${n}"
   fi
 }
 

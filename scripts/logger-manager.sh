@@ -1,15 +1,32 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PUB_ROOT="${PUB_ROOT:-/data/pub}"
-EVENTS_DIR="$PUB_ROOT/logs/events"
-mkdir -p "$EVENTS_DIR"
-HB_FILE="$EVENTS_DIR/logger-manager.heartbeat"
+# shellcheck disable=SC1091
+source /opt/scripts/lib.sh
 
 STATIONS_FILE="/config/stations.list"
 POLL_SEC="${POLL_SEC:-5}"
 
-logm() { echo "[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] logger-manager $*" | tee -a "$EVENTS_DIR/logger-manager.log"; }
+load_cfg() {
+  if [[ -f /config/.env ]]; then
+    # shellcheck disable=SC1091
+    set -a; source /config/.env; set +a
+  fi
+}
+
+init_paths() {
+  PUB_ROOT="${PUB_ROOT:-/data/pub}"
+  EVENTS_DIR="$PUB_ROOT/logs/events"
+  mkdir -p "$EVENTS_DIR"
+  HB_FILE="$EVENTS_DIR/logger-manager.heartbeat"
+}
+
+logm() {
+  local lvl="${1:-INFO}"; shift || true
+  local threshold="${LOG_LEVEL:-INFO}"
+  log_should "$lvl" "$threshold" || return 0
+  echo "[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] logger-manager $lvl $*" | tee -a "$EVENTS_DIR/logger-manager.log"
+}
 
 declare -A PIDS=()
 
@@ -18,8 +35,24 @@ start_station() {
   if [[ -n "${PIDS[$mp]:-}" ]] && kill -0 "${PIDS[$mp]}" 2>/dev/null; then
     return
   fi
-  logm "START $mp"
-  /opt/scripts/station-logger.sh "$mp" >>"$EVENTS_DIR/${mp}.log" 2>&1 &
+  logm INFO "START $mp"
+
+  # Extremely verbose RTKLIB console output (connect status every ~5s) must NOT be stored by default.
+  # We only capture it in DEBUG mode, or if explicitly forced.
+  local capture="${STATION_CAPTURE_LOG:-}"
+  if [[ -z "$capture" || "$capture" == "auto" ]]; then
+    if (( $(log_level_num "${LOG_LEVEL:-INFO}") >= 3 )); then
+      capture=true
+    else
+      capture=false
+    fi
+  fi
+
+  if bool_is_true "$capture"; then
+    /opt/scripts/station-logger.sh "$mp" >>"$EVENTS_DIR/${mp}.log" 2>&1 &
+  else
+    /opt/scripts/station-logger.sh "$mp" >/dev/null 2>&1 &
+  fi
   PIDS[$mp]=$!
 }
 
@@ -27,7 +60,7 @@ stop_station() {
   local mp="$1"
   local pid="${PIDS[$mp]:-}"
   if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-    logm "STOP  $mp (pid=$pid)"
+    logm INFO "STOP  $mp (pid=$pid)"
     kill -TERM "$pid" 2>/dev/null || true
     sleep 2
     kill -KILL "$pid" 2>/dev/null || true
@@ -82,18 +115,24 @@ reconcile() {
 }
 
 sigterm() {
-  logm "SIGTERM: stopping all stations"
+  logm WARN "SIGTERM: stopping all stations"
   for mp in "${!PIDS[@]}"; do stop_station "$mp"; done
   exit 0
 }
 trap sigterm TERM INT
 
-logm "boot"
+load_cfg
+init_paths
+
+logm INFO "boot"
 reconcile
 
 # Polling robuste (marche même si inotify ne voit pas les bind mounts)
 prev_sig=""
 while true; do
+  load_cfg
+  init_paths
+
   # heartbeat (atomic write, safe on NFS)
   printf "%s\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$HB_FILE.tmp" 2>/dev/null || true
   mv -f "$HB_FILE.tmp" "$HB_FILE" 2>/dev/null || true
@@ -108,7 +147,7 @@ while true; do
   fi
 
   if [[ "$sig" != "$prev_sig" ]]; then
-    logm "config changed -> reconcile"
+    logm INFO "config changed -> reconcile"
     reconcile
     prev_sig="$sig"
   fi

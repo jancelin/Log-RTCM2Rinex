@@ -15,14 +15,34 @@ load_cfg() {
 }
 
 evt() {
-  echo "[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] $MP $*" | tee -a "${EVENTS_FILE:-/dev/stderr}"
+  local lvl="${1:-INFO}"; shift || true
+  local threshold="${STATION_EVENTS_LEVEL:-${LOG_LEVEL:-INFO}}"
+  local line="[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] $MP $lvl $*"
+
+  # monitoring-first: write to events file (persistent)
+  if log_should "$lvl" "$threshold"; then
+    echo "$line" >> "${EVENTS_FILE:-/dev/stderr}"
+  fi
+
+  # optional stdout echo (for DEBUG troubleshooting)
+  local echo_mode="${STATION_ECHO_STDOUT:-auto}"
+  if [[ "$echo_mode" == "auto" ]]; then
+    if (( $(log_level_num "${LOG_LEVEL:-INFO}") >= 3 )); then
+      echo_mode=true
+    else
+      echo_mode=false
+    fi
+  fi
+  if bool_is_true "$echo_mode" && log_should "$lvl" "${LOG_LEVEL:-INFO}"; then
+    echo "$line"
+  fi
 }
 
 child_pid=""
 
 cleanup() {
   if [[ -n "${child_pid:-}" ]] && kill -0 "$child_pid" 2>/dev/null; then
-    evt "cleanup: stopping str2str (pid=$child_pid)"
+    evt INFO "cleanup: stopping str2str (pid=$child_pid)"
     kill -INT "$child_pid" 2>/dev/null || true
     sleep 1
     kill -TERM "$child_pid" 2>/dev/null || true
@@ -74,14 +94,34 @@ while true; do
 
   next_midnight_epoch="$(date -u -d 'tomorrow 00:00:00' +%s)"
 
-  evt "RUN str2str -> $OUT_PATH"
-  str2str \
-    -in "ntrip://${NTRIP_USER}:${NTRIP_PASS}@${NTRIP_HOST}:${NTRIP_PORT}/${MP}" \
-    -out "$OUT_PATH" \
-    -s "$STR2STR_TIMEOUT_MS" \
-    -r "$STR2STR_RECONNECT_MS" \
-    -f "$RTCM_SWAP_MARGIN_S" \
-    -t "$STR2STR_TRACE_LEVEL" &
+  evt INFO "RUN str2str -> $OUT_PATH"
+
+  # RTKLIB console output is extremely verbose (status line every ~5s).
+  # By default we discard it and keep monitoring via *.events.log + heartbeat.
+  want_console=""
+  if (( $(log_level_num "${LOG_LEVEL:-INFO}") >= 3 )); then
+    want_console=true
+  else
+    want_console=false
+  fi
+
+  # Build args (omit -t entirely when 0 to avoid generating str2str.trace)
+  str2str_args=(
+    -in "ntrip://${NTRIP_USER}:${NTRIP_PASS}@${NTRIP_HOST}:${NTRIP_PORT}/${MP}"
+    -out "$OUT_PATH"
+    -s "$STR2STR_TIMEOUT_MS"
+    -r "$STR2STR_RECONNECT_MS"
+    -f "$RTCM_SWAP_MARGIN_S"
+  )
+  if [[ "${STR2STR_TRACE_LEVEL:-0}" =~ ^[0-9]+$ ]] && (( STR2STR_TRACE_LEVEL > 0 )); then
+    str2str_args+=( -t "$STR2STR_TRACE_LEVEL" )
+  fi
+
+  if bool_is_true "$want_console"; then
+    str2str "${str2str_args[@]}" &
+  else
+    str2str "${str2str_args[@]}" >/dev/null 2>&1 &
+  fi
   child_pid=$!
   pid=$child_pid
 
@@ -92,7 +132,7 @@ while true; do
 
     # restart cleanly at 00:00 UTC to switch YYYY/DOY directories
     if (( now >= next_midnight_epoch )); then
-      evt "MIDNIGHT UTC -> restart str2str"
+      evt INFO "MIDNIGHT UTC -> restart str2str"
       kill -INT "$pid" 2>/dev/null || true
       wait "$pid" || true
       break
@@ -104,12 +144,12 @@ while true; do
       mtime="$(stat -c %Y "$latest" 2>/dev/null || echo 0)"
       age=$(( now - mtime ))
       if (( age > STALE_AFTER_SEC )) && (( now - last_warn > STALE_AFTER_SEC )); then
-        evt "STALE no new RTCM for ${age}s (base down?) latest=$(basename "$latest")"
+        evt WARN "STALE no new RTCM for ${age}s (base down?) latest=$(basename "$latest")"
         last_warn="$now"
       fi
     else
       if (( now - last_warn > STALE_AFTER_SEC )); then
-        evt "STALE no RTCM files yet (base down?)"
+        evt WARN "STALE no RTCM files yet (base down?)"
         last_warn="$now"
       fi
     fi
@@ -118,7 +158,7 @@ while true; do
   done
 
   wait "$pid" || true
-  evt "str2str exited -> restart in 5s"
+  evt WARN "str2str exited -> restart in 5s"
   sleep 5
 done
 

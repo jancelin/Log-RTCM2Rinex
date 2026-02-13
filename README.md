@@ -213,6 +213,23 @@ data/pub/logs/events/logger-manager.log
 
 ## Logs & diagnostic
 
+### Politique de logs (optimisation stockage)
+
+Le gros volume de logs venait des **messages console RTKLIB** de `str2str` (une ligne d'état toutes les ~5s). Dans l’ancienne version, ces messages étaient capturés dans `data/pub/logs/events/<MP>.log` (ex: `CT02.log`) ce qui grossit très vite et n’apporte pas de monitoring utile en production.
+
+Nouvelle logique :
+
+* **Monitoring persistant** via `data/pub/logs/events/<MP>.events.log` (événements: base down, redémarrages, etc.).
+* **Console RTKLIB (très verbeuse)** désactivée par défaut : le fichier `data/pub/logs/events/<MP>.log` n’est généré que si tu passes en mode debug.
+
+Variables dans `config/.env` :
+
+* `LOG_LEVEL=ERROR|WARN|INFO|DEBUG` : niveau global (logger-manager + converter).
+* `STATION_EVENTS_LEVEL=WARN` : niveau écrit dans `<MP>.events.log` (recommandé en prod: WARN).
+* `STATION_CAPTURE_LOG=auto|true|false` : capture de la console RTKLIB dans `<MP>.log` (**très verbeux**). `auto` = activé uniquement si `LOG_LEVEL=DEBUG`.
+
+Recommandation production : `LOG_LEVEL=INFO`, `STATION_EVENTS_LEVEL=WARN`, `STATION_CAPTURE_LOG=auto`.
+
 ### Traces RTKLIB (`str2str`)
 
 Un fichier de trace par station :
