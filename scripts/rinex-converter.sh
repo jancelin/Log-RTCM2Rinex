@@ -8,8 +8,12 @@ source /opt/scripts/lib.sh
 PUB_ROOT="${PUB_ROOT:-/data/pub}"
 EVENTS_DIR="$PUB_ROOT/logs/events"
 mkdir -p "$EVENTS_DIR"
-HB_FILE="$EVENTS_DIR/converter.heartbeat"
-STATUS_FILE="$EVENTS_DIR/converter.status.json"
+
+# Converter instance identity (allows multiple converters running in parallel)
+CONVERTER_NAME="${CONVERTER_NAME:-converter}"
+LOG_FILE="$EVENTS_DIR/${CONVERTER_NAME}.log"
+HB_FILE="$EVENTS_DIR/${CONVERTER_NAME}.heartbeat"
+STATUS_FILE="$EVENTS_DIR/${CONVERTER_NAME}.status.json"
 
 logc() {
   local lvl="INFO"
@@ -54,7 +58,7 @@ logc() {
   esac
   local threshold="${LOG_LEVEL:-INFO}"
   log_should "$lvl" "$threshold" || return 0
-  echo "[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] converter $lvl $*" | tee -a "$EVENTS_DIR/converter.log"
+  echo "[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] ${CONVERTER_NAME} $lvl $*" | tee -a "$LOG_FILE"
 }
 
 heartbeat() {
@@ -63,7 +67,12 @@ heartbeat() {
   printf "%s\n" "$now" > "$HB_FILE.tmp" 2>/dev/null || true
   mv -f "$HB_FILE.tmp" "$HB_FILE" 2>/dev/null || true
   # lightweight JSON status for external monitoring
-  printf '{"ts":"%s","last_hour":"%s","last_day":"%s"}\n' "$now" "${last_hour_key:-}" "${last_day_key:-}" > "$STATUS_FILE.tmp" 2>/dev/null || true
+  role="auto"
+  if [[ "${RINEX_HOURLY_ENABLE:-false}" == "true" && "${RINEX_DAILY_ENABLE:-false}" == "true" ]]; then role="both";
+  elif [[ "${RINEX_HOURLY_ENABLE:-false}" == "true" ]]; then role="hourly";
+  elif [[ "${RINEX_DAILY_ENABLE:-false}" == "true" ]]; then role="daily";
+  else role="disabled"; fi
+  printf '{"ts":"%s","name":"%s","role":"%s","last_hour":"%s","last_day":"%s"}\n' "$now" "$CONVERTER_NAME" "$role" "${last_hour_key:-}" "${last_day_key:-}" > "$STATUS_FILE.tmp" 2>/dev/null || true
   mv -f "$STATUS_FILE.tmp" "$STATUS_FILE" 2>/dev/null || true
 }
 
@@ -143,10 +152,15 @@ load_cfg() {
   if [[ -f /config/.env ]]; then
     # shellcheck disable=SC1091
     set -a; source /config/.env; set +a
+    # Per-container overrides (docker-compose `environment:`) — keep them stable even if /config/.env changes
+    [[ -n "${FORCE_RINEX_HOURLY_ENABLE:-}" ]] && RINEX_HOURLY_ENABLE="$FORCE_RINEX_HOURLY_ENABLE"
+    [[ -n "${FORCE_RINEX_DAILY_ENABLE:-}"  ]] && RINEX_DAILY_ENABLE="$FORCE_RINEX_DAILY_ENABLE"
+    [[ -n "${FORCE_CLEANUP_ENABLE:-}"    ]] && CLEANUP_ENABLE="$FORCE_CLEANUP_ENABLE"
+    [[ -n "${FORCE_TMP_ROOT:-}"          ]] && TMP_ROOT="$FORCE_TMP_ROOT"
   fi
 }
 
-STATIONS_FILE="/config/stations.list"
+STATIONS_FILE="${STATIONS_FILE:-/config/stations.list}"
 
 read_stations() {
   if [[ -r "$STATIONS_FILE" ]]; then
@@ -534,7 +548,8 @@ while true; do
   if [[ "${RINEX_HOURLY_ENABLE:-false}" == "true" ]]; then
     at_min="${RINEX_HOURLY_AT_MINUTE:-3}"
     now_min="$(date -u +%M)"; now_min=$((10#$now_min))
-    if (( now_min == at_min )); then
+    # Robust trigger: if we missed the exact minute (load/restart), run once as soon as now_min >= at_min.
+    if (( now_min >= at_min )); then
       hour_key="$(date -u -d '1 hour ago' +%Y%m%d%H)"
       if [[ "$hour_key" != "$last_hour_key" ]]; then
         logc "tick hourly: target_hour=$hour_key"
@@ -548,7 +563,8 @@ while true; do
   if [[ "${RINEX_DAILY_ENABLE:-false}" == "true" ]]; then
     daily_at="${RINEX_DAILY_AT:-00:20}"
     now_hm="$(date -u +%H:%M)"
-    if [[ "$now_hm" == "$daily_at" ]]; then
+    # Robust trigger: if we missed the exact minute (load/restart), run once as soon as now_hm >= daily_at.
+    if [[ "$now_hm" == "$daily_at" || "$now_hm" > "$daily_at" ]]; then
       day_key="$(date -u -d '1 day ago' +%Y%j)"
       if [[ "$day_key" != "$last_day_key" ]]; then
         logc "tick daily: target_day=$day_key"
@@ -562,13 +578,15 @@ while true; do
   heartbeat
 
   # optional cleanup (runs once per UTC day at CLEANUP_AT)
-  cleanup_at="${CLEANUP_AT:-01:10}"
-  now_hm="$(date -u +%H:%M)"
-  if [[ "$now_hm" == "$cleanup_at" ]]; then
-    cleanup_key="$(date -u +%Y%m%d)"
-    if [[ "$cleanup_key" != "$last_cleanup_key" ]]; then
-      cleanup_old || true
-      last_cleanup_key="$cleanup_key"
+  if [[ "${CLEANUP_ENABLE:-true}" == "true" ]]; then
+    cleanup_at="${CLEANUP_AT:-01:10}"
+    now_hm="$(date -u +%H:%M)"
+    if [[ "$now_hm" == "$cleanup_at" ]]; then
+      cleanup_key="$(date -u +%Y%m%d)"
+      if [[ "$cleanup_key" != "$last_cleanup_key" ]]; then
+        cleanup_old || true
+        last_cleanup_key="$cleanup_key"
+      fi
     fi
   fi
 

@@ -71,7 +71,9 @@ La rotation RTCM est configurable (par défaut **horaire**) via `RTCM_ROTATE_HOU
 │   ├── lib.sh
 │   ├── logger-manager.sh
 │   ├── station-logger.sh
-│   └── rinex-converter.sh
+│   ├── rinex-converter.sh
+│   ├── converter1s.sh
+│   └── converter30s.sh
 └── data/
     └── pub/
         ├── centipede_30s/
@@ -124,8 +126,45 @@ docker compose up -d --build
 
 ```bash
 docker compose logs -f logger
-docker compose logs -f converter
+docker compose logs -f converter1s
+docker compose logs -f converter30s
 ```
+
+
+---
+
+## Architecture des convertisseurs (converter1s / converter30s)
+
+On sépare la conversion en **deux services Docker** indépendants :
+
+- **`converter1s`** : génère les **RINEX horaires 1s** (heure précédente, typiquement à `HH:03` UTC).
+- **`converter30s`** : génère les **RINEX journaliers 30s** (jour précédent, typiquement à `00:20` UTC).
+
+### Pourquoi cette séparation ?
+
+Dans un design “monolithique”, si la conversion horaire prend longtemps (beaucoup de stations, charge CPU/IO),
+la boucle principale peut **rater l’instant exact** du déclenchement journalier (ex: `00:20`) et le daily ne part pas.
+Avec deux conteneurs :
+- chaque planification est **indépendante** (pas de blocage mutuel),
+- tu peux ajuster **le parallélisme** et les ressources par service,
+- tu simplifies les redémarrages/debug (un converter n’impacte pas l’autre),
+- tu peux **multiplier** les converters plus tard (ex: un `converter1s_bis` avec d’autres stations ou un autre planning).
+
+### Zéro duplication de logique
+
+La logique est **unique** dans `scripts/rinex-converter.sh`.  
+Les scripts `converter1s.sh` et `converter30s.sh` ne font que poser des variables d’environnement (nom/role/tmp)
+puis `exec` le script commun.
+
+### Identité et fichiers de monitoring
+
+Chaque converter définit `CONVERTER_NAME`, ce qui **sépare** :
+
+- logs : `data/pub/logs/events/<CONVERTER_NAME>.log`
+- heartbeat : `data/pub/logs/events/<CONVERTER_NAME>.heartbeat`
+- status : `data/pub/logs/events/<CONVERTER_NAME>.status.json`
+
+Le **cleanup** (rétention) est activé uniquement sur `converter30s` (`FORCE_CLEANUP_ENABLE=true`) par défaut.
 
 ---
 

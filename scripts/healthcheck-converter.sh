@@ -8,7 +8,8 @@ fi
 
 PUB_ROOT="${PUB_ROOT:-/data/pub}"
 EVENTS_DIR="$PUB_ROOT/logs/events"
-HB_FILE="$EVENTS_DIR/converter.heartbeat"
+CONVERTER_NAME="${CONVERTER_NAME:-converter}"
+HB_FILE="$EVENTS_DIR/${CONVERTER_NAME}.heartbeat"
 MAX_AGE_SEC="${CONVERTER_HEALTH_MAX_AGE_SEC:-180}"
 
 if [[ ! -f "$HB_FILE" ]]; then

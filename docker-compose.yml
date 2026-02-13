@@ -17,16 +17,48 @@ services:
       retries: 3
       start_period: 30s
 
-  converter:
+  # Hourly RINEX (1s) converter (previous hour) — independent service
+  converter1s:
     build: .
     image: centipede-logger:local
-    container_name: centipede_converter
+    container_name: centipede_converter1s
     env_file: ./config/.env
+    environment:
+      - CONVERTER_NAME=converter1s
+      - FORCE_RINEX_HOURLY_ENABLE=true
+      - FORCE_RINEX_DAILY_ENABLE=false
+      - FORCE_CLEANUP_ENABLE=false
+      - FORCE_TMP_ROOT=/data/pub/tmp/converter1s
     volumes:
       - ./data:/data
       - ./scripts:/opt/scripts:rw
       - ./config:/config:ro
-    command: ["/opt/scripts/rinex-converter.sh"]
+    command: ["/opt/scripts/converter1s.sh"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/scripts/healthcheck-converter.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # Daily RINEX (30s) converter (yesterday) — independent service
+  converter30s:
+    build: .
+    image: centipede-logger:local
+    container_name: centipede_converter30s
+    env_file: ./config/.env
+    environment:
+      - CONVERTER_NAME=converter30s
+      - FORCE_RINEX_HOURLY_ENABLE=false
+      - FORCE_RINEX_DAILY_ENABLE=true
+      - FORCE_CLEANUP_ENABLE=true
+      - FORCE_TMP_ROOT=/data/pub/tmp/converter30s
+    volumes:
+      - ./data:/data
+      - ./scripts:/opt/scripts:rw
+      - ./config:/config:ro
+    command: ["/opt/scripts/converter30s.sh"]
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "/opt/scripts/healthcheck-converter.sh"]
