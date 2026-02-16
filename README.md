@@ -130,6 +130,35 @@ docker compose logs -f converter1s
 docker compose logs -f converter30s
 ```
 
+---
+
+## Interface web (nginx)
+
+Le service `web` expose **uniquement** :
+
+- `/centipede_30s/` (archives RINEX journalières 30s)
+- `/centipede_1s/` (archives RINEX horaires 1s)
+
+### Lisibilité : police un peu plus grande
+
+Nginx `autoindex` génère un HTML minimal (principalement un bloc `<pre>`). Pour améliorer la lisibilité **sans ajouter de module externe** :
+
+- la page d’accueil est servie via `nginx/html/index.html` avec une CSS simple (font-size ~18px).
+- pour les listings `autoindex`, on injecte une petite CSS via `sub_filter` (même font-size) directement dans le `<head>`.
+
+### Téléchargement forcé (pas d’ouverture inline)
+
+Par défaut, un navigateur peut afficher/ouvrir certains fichiers (logs, texte, etc.).
+On force le **téléchargement** en séparant les routes nginx :
+
+- une location “dossier” (`/centipede_*/`) garde `autoindex` (HTML) ;
+- une location “fichier” (regex, sans slash final) ajoute :
+  - `Content-Disposition: attachment`
+  - `Content-Type: application/octet-stream`
+  - `X-Content-Type-Options: nosniff`
+
+Résultat : un clic sur un fichier déclenche un download, tandis que les dossiers restent navigables.
+
 
 ---
 
