@@ -142,7 +142,7 @@ IN_DIR="${1:-.}"                # dossier des .rtcm
 OUT_DIR="${2:-$IN_DIR}"         # dossier de sortie des .obs
 STATION="${3:-BENGLA1}"         # station / préfixe
 MARKER="${4:-BENGLA1}"          # convbin -hm
-ANT_HGT="${5:-2.7}"             # convbin -hc
+ANT_HGT="${5:-0.0}"             # convbin -hc
 INTERVAL="${6:-30}"             # convbin -ti (s)
 
 mkdir -p "$OUT_DIR"
@@ -216,14 +216,14 @@ chmod +x rtcm2rinex_daily.sh
 Exemple (logs dans `./rtcm` et sortie dans `./rinex`) :
 
 ```bash
-./rtcm2rinex_daily.sh ./rtcm ./rinex BENGLA1 BENGLA1 2.7 30
+./rtcm2rinex_daily.sh ./rtcm ./rinex BENGLA1 BENGLA1 0.0 30
 ```
 
 * `./rtcm` : dossier d’entrée contenant les `.rtcm`
 * `./rinex` : dossier de sortie des `.obs`
 * `BENGLA1` : nom station (préfixe de sortie)
 * `BENGLA1` : marker name RINEX (`-hm`)
-* `2.7` : hauteur antenne (`-hc`)
+* `0.0` : hauteur antenne (`-hc`)
 * `30` : intervalle d’échantillonnage (s) (`-ti`)
 
 ---
@@ -245,7 +245,7 @@ ls -lh /mondossier/rinex/*.obs | tail
 Vérifier qu’un jour déjà converti est bien “skip” :
 
 ```bash
-./rtcm2rinex_daily.sh /mondossier/rtcm /mondossier/rinex BENGLA1 BENGLA1 2.7 30
+./rtcm2rinex_daily.sh /mondossier/rtcm /mondossier/rinex BENGLA1 BENGLA1 0.0 30
 ```
 
 ---

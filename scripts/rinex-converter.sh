@@ -351,7 +351,7 @@ convert_daily_for_station() {
   local marker_name marker_number ant_hgt
   marker_name="$(station_var "$mp" "MARKER_NAME")"; marker_name="${marker_name:-$rinex_id}"
   marker_number="$(station_var "$mp" "MARKER_NUMBER")"; marker_number="${marker_number:-$mp}"
-  ant_hgt="$(station_var "$mp" "ANT_HGT")"; ant_hgt="${ant_hgt:-${RINEX_ANT_HGT_DEFAULT:-2.7}}"
+  ant_hgt="$(station_var "$mp" "ANT_HGT")"; ant_hgt="${ant_hgt:-${RINEX_ANT_HGT_DEFAULT:-0.0}}"
 
   local base out_crx_gz
   base="${rinex_id}_S_${year}${doy}0000_01D_${rate}_MO"
@@ -458,7 +458,7 @@ convert_hourly_for_station() {
   local marker_name marker_number ant_hgt
   marker_name="$(station_var "$mp" "MARKER_NAME")"; marker_name="${marker_name:-$rinex_id}"
   marker_number="$(station_var "$mp" "MARKER_NUMBER")"; marker_number="${marker_number:-$mp}"
-  ant_hgt="$(station_var "$mp" "ANT_HGT")"; ant_hgt="${ant_hgt:-${RINEX_ANT_HGT_DEFAULT:-2.7}}"
+  ant_hgt="$(station_var "$mp" "ANT_HGT")"; ant_hgt="${ant_hgt:-${RINEX_ANT_HGT_DEFAULT:-0.0}}"
 
   local base out_crx_gz
   base="${rinex_id}_S_${year}${doy}${hh}00_01H_${rate}_MO"

@@ -6,7 +6,7 @@ IN_DIR="${1:-.}"                # dossier des .rtcm
 OUT_DIR="${2:-$IN_DIR}"         # dossier de sortie des .obs
 STATION="${3:-BENGLA1}"         # station / préfixe
 MARKER="${4:-BENGLA1}"          # convbin -hm
-ANT_HGT="${5:-2.7}"             # convbin -hc
+ANT_HGT="${5:-0.0}"             # convbin -hc
 INTERVAL="${6:-30}"             # convbin -ti (s)
 
 mkdir -p "$OUT_DIR"

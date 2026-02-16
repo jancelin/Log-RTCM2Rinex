@@ -193,7 +193,7 @@ process_station_hour() {
   cat "${files[@]}" > "$tmp_rtcm"
 
   local ant_hgt
-  ant_hgt="${RINEX_ANT_HGT_DEFAULT:-2.7}"
+  ant_hgt="${RINEX_ANT_HGT_DEFAULT:-0.0}"
   local -a hd_args=()
   [[ -n "${ant_hgt:-}" ]] && hd_args=(-hd "${ant_hgt}/0/0")
 
