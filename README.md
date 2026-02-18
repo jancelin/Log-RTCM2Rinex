@@ -64,7 +64,8 @@ La rotation RTCM est configurable (par défaut **horaire**) via `RTCM_ROTATE_HOU
 ├── docker-compose.yml
 ├── Dockerfile
 ├── config/
-│   ├── .env
+│   ├── .env.example
+│   ├── .env            # local (gitignored)
 │   └── stations.list
 ├── scripts/
 │   ├── entrypoint.sh
@@ -99,7 +100,13 @@ La rotation RTCM est configurable (par défaut **horaire**) via `RTCM_ROTATE_HOU
 
 ## Démarrage rapide
 
-1) Configure `.env` :
+1) Créer `config/.env` (local, **gitignored**) :
+
+```bash
+cp config/.env.example config/.env
+```
+
+Puis configure `config/.env` :
 - `PUID` / `PGID` (pour que les fichiers créés sur l’hôte appartiennent à ton user)
 - `NTRIP_HOST`, `NTRIP_PORT`, `NTRIP_USER`, `NTRIP_PASS`
 - options de robustesse `str2str`
@@ -218,6 +225,84 @@ data/pub/logs/events/logger-manager.log
 
 ---
 
+## Option DB Metadada : générer `stations.list` depuis PostgreSQL (service `querydb`)
+
+Si tu as une base PostgreSQL (ex: `centipede-rtk`) avec une vue **`public.station_list_source`** (ou équivalent)
+qui expose directement les colonnes nécessaires à `stations.list`, tu peux automatiser la création/mise à jour de
+`config/stations.list` **toutes les heures**.
+
+### Pourquoi
+
+- éviter la maintenance manuelle de `stations.list` (le réseau évolue)
+- permettre un **filtrage** (WHERE) pour ne logger/rinexer qu’un sous-ensemble (pays, validation, réseau, etc.)
+- enrichir `stations.list` avec des **métadonnées** (ECEF, receiver, antenne) afin d’alimenter `convbin` et produire un header avec des informations normées.
+
+### Comment ça marche
+
+1. Le conteneur `querydb` exécute périodiquement :
+   - une requête sur `QUERYDB_VIEW` (par défaut `public.station_list_source`)
+   - avec un `QUERYDB_WHERE` optionnel (SQL brut)
+   - puis écrit **atomiquement** `/config/stations.list` (tmp + rename)
+
+2. Le logger + converters relisent régulièrement `/config/.env` et `/config/stations.list` :
+   - l’ajout/retrait d’une station est donc pris en compte « à chaud »
+   - les converters utilisent les colonnes additionnelles de `stations.list` quand elles existent
+
+### Format `stations.list`
+
+- **Format minimal** (historique) :
+
+```txt
+<MOUNTPOINT>  <RINEX_ID>
+```
+
+- **Format étendu** (auto-généré par `querydb`) :
+
+```txt
+<MOUNTPOINT> <RINEX_ID> <X> <Y> <Z> <REC_TYPE> <REC_VER> <ANT_TYPE> <ANT_H> <ANT_E> <ANT_N>
+```
+
+**Remarque importante (encodage des espaces)** : `stations.list` est *whitespace-separated*.
+Si `REC_TYPE`, `REC_VER` ou `ANT_TYPE` contiennent des espaces, `querydb` les encode avec `|` pour garder **un seul champ**
+(ex: `SEPT|MOSAIC-X5`, `2.6.3|1.51`, `JCA228F0001|NONE`). Les convertisseurs décodent automatiquement `|` → ` `
+au moment d’écrire l’entête RINEX.
+
+Les colonnes étendues alimentent `convbin` :
+- `X/Y/Z` -> `APPROX POSITION XYZ` (`-hp x/y/z`)
+- `REC_TYPE/REC_VER` -> `REC # / TYPE / VERS` (`-hr recnum/type/ver`)
+- `ANT_TYPE` -> `ANT # / TYPE` (`-ha antnum/type`)
+- `ANT_H/E/N` -> `ANTENNA: DELTA H/E/N` (`-hd h/e/n`)
+
+### Activer / désactiver
+
+Le service est **optionnel** (Docker Compose *profiles*). Par défaut il n’est pas lancé.
+
+Activer :
+
+```bash
+docker compose --profile querydb up -d --build
+```
+
+Désactiver :
+
+```bash
+docker compose stop querydb
+```
+
+### Paramétrage (dans `config/.env`)
+
+Tu règles :
+
+- la connexion PostgreSQL : `QUERYDB_PGHOST`, `QUERYDB_PGPORT`, `QUERYDB_PGDATABASE`, `QUERYDB_PGUSER`, `QUERYDB_PGPASSWORD`, `QUERYDB_PGSSLMODE`
+- la source : `QUERYDB_VIEW`
+- le filtre : `QUERYDB_WHERE` (optionnel)
+- l’intervalle : `QUERYDB_INTERVAL_SECONDS` (par défaut 3600)
+
+> Sur Linux, `QUERYDB_PGHOST=host.docker.internal` fonctionne grâce à `extra_hosts: host-gateway`.
+> Sinon, mets directement l’IP/nom DNS du serveur PostgreSQL.
+
+---
+
 ## Variables principales (`config/.env`)
 
 ### Identité / droits
@@ -329,8 +414,21 @@ data/pub/logs/events/converter.log
 ## Lancer la fabrication des rinexs hourly à la machine
 
 ```
-docker compose exec -u 1000:1000 converter bash -lc '/opt/scripts/rinex-backfill-hourly.sh 2026-02-12'
+docker compose exec converter1s bash -lc '/opt/scripts/rinex-backfill-hourly.sh 2026-02-17'
 ```
+
+
+
+### Variables importantes (backfill = mêmes réglages que les converters)
+
+Le backfill utilise les **mêmes variables** que `scripts/rinex-converter.sh` (pour éviter des RINEX “différents” selon l’outil) :
+
+- `CONVBIN_FREQ` : valeur passée à `convbin -f` (sélection des fréquences/observables).  
+  *Si tu mets `1`, tu forces une sortie quasi mono‑fréquence → entête RINEX avec beaucoup moins d’observables (cas constaté).*  
+  Fallback legacy : `CONVBIN_FREQ_MASK`.
+- `RINEX_HOURLY_EDGE_HOURS` : marge (en heures) pour inclure des fichiers RTCM autour de la fenêtre cible.  
+  Fallback legacy : `RTCM_EDGE_HOURS`.
+
 
 ---
 
