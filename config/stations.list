@@ -1,11 +1,12 @@
 # stations.list (auto-generated)
-# generated_at_utc=2026-02-18T10:30:31Z
+# generated_at_utc=2026-02-18T10:51:39Z
 # source=public.station_list_source
 # mode=auto
-# where=mp = 'CT02'
+# where=mp = 'CT02' OR mp = 'LIENSS'
 #
 # Token encoding: internal spaces in REC_TYPE/REC_VER/ANT_TYPE are written as '|'
 # Decoding is handled by the converters when writing RINEX headers.
 #
 # <MOUNTPOINT> <RINEX_ID> <X> <Y> <Z> <REC_TYPE> <REC_VER> <ANT_TYPE> <ANT_H> <ANT_E> <ANT_N>
 CT02 A61300FRA 4424561.5286 -73255.9278 4578002.5514 SEPT|MOSAIC-X5 2.6.3|4.14.4 AS-ANT3BCAL|NONE 0.0 0.0 0.0
+LIENSS A08900FRA 4426043.0455 -89429.1998 4576296.6447 SEPT|MOSAIC-X5 2.6.3|4.14.4 AS-ANT3BCAL|NONE 0.0 0.0 0.0
