@@ -282,6 +282,11 @@ Activer :
 ```bash
 docker compose --profile querydb up -d --build
 ```
+ou si changement de paramètre WHERE dans le .env
+
+```bash
+docker compose up -d --force-recreate querydb
+```
 
 Désactiver :
 
