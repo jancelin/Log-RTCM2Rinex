@@ -225,7 +225,7 @@ data/pub/logs/events/logger-manager.log
 
 ---
 
-## Option DB Metadada : générer `stations.list` depuis PostgreSQL (service `querydb`)
+## Option geodesic-like : générer `stations.list` depuis PostgreSQL (service `querydb`)
 
 Si tu as une base PostgreSQL (ex: `centipede-rtk`) avec une vue **`public.station_list_source`** (ou équivalent)
 qui expose directement les colonnes nécessaires à `stations.list`, tu peux automatiser la création/mise à jour de
@@ -235,7 +235,7 @@ qui expose directement les colonnes nécessaires à `stations.list`, tu peux aut
 
 - éviter la maintenance manuelle de `stations.list` (le réseau évolue)
 - permettre un **filtrage** (WHERE) pour ne logger/rinexer qu’un sous-ensemble (pays, validation, réseau, etc.)
-- enrichir `stations.list` avec des **métadonnées** (ECEF, receiver, antenne) afin d’alimenter `convbin` et produire un header avec des informations normées.
+- enrichir `stations.list` avec des **métadonnées** (ECEF, receiver, antenne) afin d’alimenter `convbin` et produire un header plus proche RENAG
 
 ### Comment ça marche
 
@@ -411,24 +411,18 @@ data/pub/logs/events/logger-manager.log
 data/pub/logs/events/converter.log
 ```
 
-## Lancer la fabrication des rinexs hourly à la machine
+## Lancer la fabrication des rinexs hourly ou daily à la machine
+
+
+```bash
+docker compose exec converter30s bash -lc '/opt/scripts/rinex-backfill-daily-30s.sh 2026-02-17'
+```
+
+> Sortie: `${RINEX_OUT_ROOT_DAILY}/YYYY/DOY/<RINEX_ID>_S_YYYYDOY0000_01D_30S_MO.crx.gz` (UTC)
 
 ```
 docker compose exec converter1s bash -lc '/opt/scripts/rinex-backfill-hourly.sh 2026-02-17'
 ```
-
-
-
-### Variables importantes (backfill = mêmes réglages que les converters)
-
-Le backfill utilise les **mêmes variables** que `scripts/rinex-converter.sh` (pour éviter des RINEX “différents” selon l’outil) :
-
-- `CONVBIN_FREQ` : valeur passée à `convbin -f` (sélection des fréquences/observables).  
-  *Si tu mets `1`, tu forces une sortie quasi mono‑fréquence → entête RINEX avec beaucoup moins d’observables (cas constaté).*  
-  Fallback legacy : `CONVBIN_FREQ_MASK`.
-- `RINEX_HOURLY_EDGE_HOURS` : marge (en heures) pour inclure des fichiers RTCM autour de la fenêtre cible.  
-  Fallback legacy : `RTCM_EDGE_HOURS`.
-
 
 ---
 
