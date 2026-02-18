@@ -1,2 +1,6 @@
 /data/pub
 /patch
+.env
+
+# Local secrets
+/config/.env

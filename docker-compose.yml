@@ -82,3 +82,18 @@ services:
       - /var/cache/nginx
       - /var/run
       - /tmp
+
+  # Optional: refresh /config/stations.list from PostgreSQL every hour
+  # Enable with: docker compose --profile querydb up -d --build
+  querydb:
+    build: ./querydb
+    image: centipede-querydb:local
+    container_name: centipede_querydb
+    profiles: ["querydb"]
+    env_file: ./config/.env
+    user: "${PUID:-1000}:${PGID:-1000}"
+    volumes:
+      - ./config:/config:rw
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped

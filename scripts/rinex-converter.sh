@@ -5,6 +5,27 @@ shopt -s nullglob
 # shellcheck disable=SC1091
 source /opt/scripts/lib.sh
 
+# Decode stations.list tokens where internal spaces were encoded as '|'
+decode_ws_token() {
+  local s="${1:-}"
+  printf '%s' "${s//|/ }"
+}
+
+# Sanitize free-form values for RINEX header fields passed to RTKLIB convbin
+# (convbin expects fields separated by '/'). RINEX header fields are fixed width.
+sanitize_field() {
+  local s="${1:-}"
+  s="${s//$'\t'/ }"
+  while [[ "$s" == *"  "* ]]; do s="${s//  / }"; done
+  s="${s#"${s%%[! ]*}"}"  # ltrim spaces
+  s="${s%"${s##*[! ]}"}"  # rtrim spaces
+  s="${s//\//-}"
+  # Keep it reasonably short for the fixed-width RINEX header fields.
+  if (( ${#s} > 20 )); then
+    s="${s:0:20}"
+  fi
+  printf '%s' "$s"
+}
 PUB_ROOT="${PUB_ROOT:-/data/pub}"
 EVENTS_DIR="$PUB_ROOT/logs/events"
 mkdir -p "$EVENTS_DIR"
@@ -83,17 +104,17 @@ run_station_jobs() {
   (( max < 1 )) && max=1
 
   local -a pids=()
-  local line mp rid
+  local line mp rid x y z rec_type rec_ver ant_type ant_h ant_e ant_n
 
   for line in "$@"; do
-    read -r mp rid <<<"$line"
+    read -r mp rid x y z rec_type rec_ver ant_type ant_h ant_e ant_n <<<"$line"
     [[ -z "$mp" ]] && continue
     [[ -z "${rid:-}" ]] && rid="$mp"
 
     if [[ "$mode" == "hourly" ]]; then
-      ( convert_hourly_for_station "$mp" "$rid" || true ) &
+      ( convert_hourly_for_station "$mp" "$rid" "$x" "$y" "$z" "$rec_type" "$rec_ver" "$ant_type" "$ant_h" "$ant_e" "$ant_n" || true ) &
     else
-      ( convert_daily_for_station "$mp" "$rid" || true ) &
+      ( convert_daily_for_station "$mp" "$rid" "$x" "$y" "$z" "$rec_type" "$rec_ver" "$ant_type" "$ant_h" "$ant_e" "$ant_n" || true ) &
     fi
 
     pids+=("$!")
@@ -167,7 +188,16 @@ read_stations() {
     awk '
       /^[[:space:]]*#/ {next}
       /^[[:space:]]*$/ {next}
-      { mp=$1; rid=$2; if (rid=="") rid=mp; print mp, rid }
+      {
+        mp=$1; rid=$2;
+        if (rid=="") rid=mp;
+        # Optional extended fields (RENAG-like metadata)
+        x=$3; y=$4; z=$5;
+        rec_type=$6; rec_ver=$7;
+        ant_type=$8;
+        ant_h=$9; ant_e=$10; ant_n=$11;
+        print mp, rid, x, y, z, rec_type, rec_ver, ant_type, ant_h, ant_e, ant_n
+      }
     ' "$STATIONS_FILE"
     return
   fi
@@ -333,6 +363,10 @@ collect_rtcm_files_window() {
 convert_daily_for_station() {
   local mp="$1"
   local rinex_id="$2"
+  local x="${3:-}" y="${4:-}" z="${5:-}"
+  local rec_type_in="${6:-}" rec_ver_in="${7:-}"
+  local ant_type_in="${8:-}"
+  local ant_h_in="${9:-}" ant_e_in="${10:-}" ant_n_in="${11:-}"
 
   local day_epoch year doy day_slash
   day_epoch="$(date -u -d '1 day ago 12:00:00' +%s)"    # stable inside the day
@@ -348,10 +382,37 @@ convert_daily_for_station() {
   mkdir -p "$out_dir"
 
   # RENAG-like: MARKER NAME = rinex_id ; MARKER NUMBER = mountpoint
-  local marker_name marker_number ant_hgt
+  local marker_name marker_number
   marker_name="$(station_var "$mp" "MARKER_NAME")"; marker_name="${marker_name:-$rinex_id}"
   marker_number="$(station_var "$mp" "MARKER_NUMBER")"; marker_number="${marker_number:-$mp}"
-  ant_hgt="$(station_var "$mp" "ANT_HGT")"; ant_hgt="${ant_hgt:-${RINEX_ANT_HGT_DEFAULT:-0.0}}"
+
+  # Optional station metadata (from stations.list extended columns or env overrides)
+  local rec_num rec_type rec_ver ant_num ant_type ant_h ant_e ant_n
+  rec_num="$(station_var "$mp" "REC_NUM")"; rec_num="${rec_num:-${RINEX_REC_NUM_DEFAULT:-UNKNOWN}}"
+  rec_type="$(station_var "$mp" "REC_TYPE")"; rec_type="${rec_type:-$rec_type_in}"
+  rec_ver="$(station_var "$mp" "REC_VER")";   rec_ver="${rec_ver:-$rec_ver_in}"
+
+  ant_num="$(station_var "$mp" "ANT_NUM")";   ant_num="${ant_num:-${RINEX_ANT_NUM_DEFAULT:-UNKNOWN}}"
+  ant_type="$(station_var "$mp" "ANT_TYPE")"; ant_type="${ant_type:-$ant_type_in}"
+
+  # Decode internal spaces encoded as | in stations.list tokens
+  rec_type="$(decode_ws_token "${rec_type:-UNKNOWN}")"
+  rec_ver="$(decode_ws_token "${rec_ver:-UNKNOWN}")"
+  ant_type="$(decode_ws_token "${ant_type:-NONE|NONE}")"
+
+  # Backward compat: ANT_HGT previously meant DELTA H (meters)
+  local ant_hgt_legacy
+  ant_hgt_legacy="$(station_var "$mp" "ANT_HGT")"
+
+  ant_h="$(station_var "$mp" "ANT_H")"; ant_h="${ant_h:-$ant_h_in}"; ant_h="${ant_h:-$ant_hgt_legacy}"; ant_h="${ant_h:-${RINEX_ANT_HGT_DEFAULT:-0.0}}"
+  ant_e="$(station_var "$mp" "ANT_E")"; ant_e="${ant_e:-$ant_e_in}"; ant_e="${ant_e:-0.0}"
+  ant_n="$(station_var "$mp" "ANT_N")"; ant_n="${ant_n:-$ant_n_in}"; ant_n="${ant_n:-0.0}"
+
+  local approx_xyz
+  approx_xyz="$(station_var "$mp" "APPROX_XYZ")"
+  if [[ -n "$approx_xyz" ]]; then
+    IFS=/ read -r x y z <<<"$approx_xyz"
+  fi
 
   local base out_crx_gz
   base="${rinex_id}_S_${year}${doy}0000_01D_${rate}_MO"
@@ -388,13 +449,23 @@ convert_daily_for_station() {
 
   local rinex_ver="${RINEX_VERSION:-3.04}"
   local freq="${CONVBIN_FREQ:-4}"
-  local hd_args=()
-  [[ -n "${ant_hgt:-}" ]] && hd_args=(-hd "${ant_hgt}/0/0")
+  local hp_args=() hr_args=() ha_args=() hd_args=()
+  if [[ -n "${x:-}" && -n "${y:-}" && -n "${z:-}" ]]; then
+    hp_args=(-hp "${x}/${y}/${z}")
+  fi
+  if [[ -n "${rec_type:-}" || -n "${rec_ver:-}" || -n "${rec_num:-}" ]]; then
+    hr_args=(-hr "$(sanitize_field "$rec_num")/$(sanitize_field "${rec_type:-UNKNOWN}")/$(sanitize_field "${rec_ver:-UNKNOWN}")")
+  fi
+  if [[ -n "${ant_type:-}" || -n "${ant_num:-}" ]]; then
+    ha_args=(-ha "$(sanitize_field "$ant_num")/$(sanitize_field "${ant_type:-NONE NONE}")")
+  fi
+  hd_args=(-hd "${ant_h}/${ant_e}/${ant_n}")
 
   logc "RUN  convbin $mp daily -> ${base}.crx.gz"
   if ! convbin "$tmp_rtcm" \
     -v "$rinex_ver" -r rtcm3 \
     -hm "$marker_name" -hn "$marker_number" \
+    "${hp_args[@]}" "${hr_args[@]}" "${ha_args[@]}" \
     -f "$freq" \
     "${hd_args[@]}" \
     -os \
@@ -439,6 +510,10 @@ convert_daily_for_station() {
 convert_hourly_for_station() {
   local mp="$1"
   local rinex_id="$2"
+  local x="${3:-}" y="${4:-}" z="${5:-}"
+  local rec_type_in="${6:-}" rec_ver_in="${7:-}"
+  local ant_type_in="${8:-}"
+  local ant_h_in="${9:-}" ant_e_in="${10:-}" ant_n_in="${11:-}"
 
   local target_epoch year doy ymd_slash ymd_hyphen hh
   target_epoch="$(date -u -d '1 hour ago' +%s)"           # within target hour
@@ -455,10 +530,34 @@ convert_hourly_for_station() {
   local out_dir="$out_root/$year/$doy"
   mkdir -p "$out_dir"
 
-  local marker_name marker_number ant_hgt
+  local marker_name marker_number
   marker_name="$(station_var "$mp" "MARKER_NAME")"; marker_name="${marker_name:-$rinex_id}"
   marker_number="$(station_var "$mp" "MARKER_NUMBER")"; marker_number="${marker_number:-$mp}"
-  ant_hgt="$(station_var "$mp" "ANT_HGT")"; ant_hgt="${ant_hgt:-${RINEX_ANT_HGT_DEFAULT:-0.0}}"
+
+  local rec_num rec_type rec_ver ant_num ant_type ant_h ant_e ant_n
+  rec_num="$(station_var "$mp" "REC_NUM")"; rec_num="${rec_num:-${RINEX_REC_NUM_DEFAULT:-UNKNOWN}}"
+  rec_type="$(station_var "$mp" "REC_TYPE")"; rec_type="${rec_type:-$rec_type_in}"
+  rec_ver="$(station_var "$mp" "REC_VER")";   rec_ver="${rec_ver:-$rec_ver_in}"
+
+  ant_num="$(station_var "$mp" "ANT_NUM")";   ant_num="${ant_num:-${RINEX_ANT_NUM_DEFAULT:-UNKNOWN}}"
+  ant_type="$(station_var "$mp" "ANT_TYPE")"; ant_type="${ant_type:-$ant_type_in}"
+
+  # Decode internal spaces encoded as | in stations.list tokens
+  rec_type="$(decode_ws_token "${rec_type:-UNKNOWN}")"
+  rec_ver="$(decode_ws_token "${rec_ver:-UNKNOWN}")"
+  ant_type="$(decode_ws_token "${ant_type:-NONE|NONE}")"
+
+  local ant_hgt_legacy
+  ant_hgt_legacy="$(station_var "$mp" "ANT_HGT")"
+  ant_h="$(station_var "$mp" "ANT_H")"; ant_h="${ant_h:-$ant_h_in}"; ant_h="${ant_h:-$ant_hgt_legacy}"; ant_h="${ant_h:-${RINEX_ANT_HGT_DEFAULT:-0.0}}"
+  ant_e="$(station_var "$mp" "ANT_E")"; ant_e="${ant_e:-$ant_e_in}"; ant_e="${ant_e:-0.0}"
+  ant_n="$(station_var "$mp" "ANT_N")"; ant_n="${ant_n:-$ant_n_in}"; ant_n="${ant_n:-0.0}"
+
+  local approx_xyz
+  approx_xyz="$(station_var "$mp" "APPROX_XYZ")"
+  if [[ -n "$approx_xyz" ]]; then
+    IFS=/ read -r x y z <<<"$approx_xyz"
+  fi
 
   local base out_crx_gz
   base="${rinex_id}_S_${year}${doy}${hh}00_01H_${rate}_MO"
@@ -487,13 +586,23 @@ convert_hourly_for_station() {
 
   local rinex_ver="${RINEX_VERSION:-3.04}"
   local freq="${CONVBIN_FREQ:-4}"
-  local hd_args=()
-  [[ -n "${ant_hgt:-}" ]] && hd_args=(-hd "${ant_hgt}/0/0")
+  local hp_args=() hr_args=() ha_args=() hd_args=()
+  if [[ -n "${x:-}" && -n "${y:-}" && -n "${z:-}" ]]; then
+    hp_args=(-hp "${x}/${y}/${z}")
+  fi
+  if [[ -n "${rec_type:-}" || -n "${rec_ver:-}" || -n "${rec_num:-}" ]]; then
+    hr_args=(-hr "$(sanitize_field "$rec_num")/$(sanitize_field "${rec_type:-UNKNOWN}")/$(sanitize_field "${rec_ver:-UNKNOWN}")")
+  fi
+  if [[ -n "${ant_type:-}" || -n "${ant_num:-}" ]]; then
+    ha_args=(-ha "$(sanitize_field "$ant_num")/$(sanitize_field "${ant_type:-NONE NONE}")")
+  fi
+  hd_args=(-hd "${ant_h}/${ant_e}/${ant_n}")
 
   logc "RUN  convbin $mp hour=$hh -> ${base}.crx.gz"
   if ! convbin "$tmp_rtcm" \
     -v "$rinex_ver" -r rtcm3 \
     -hm "$marker_name" -hn "$marker_number" \
+    "${hp_args[@]}" "${hr_args[@]}" "${ha_args[@]}" \
     -f "$freq" \
     "${hd_args[@]}" \
     -os \
