@@ -23,11 +23,38 @@ BACKFILL_PARALLEL="${BACKFILL_PARALLEL:-${CONVERT_PARALLEL:-2}}"
 if ! [[ "$BACKFILL_PARALLEL" =~ ^[0-9]+$ ]]; then BACKFILL_PARALLEL=2; fi
 if (( BACKFILL_PARALLEL < 1 )); then BACKFILL_PARALLEL=1; fi
 
+# Decode stations.list tokens where internal spaces were encoded as '|'
+decode_ws_token() {
+  local s="${1:-}"
+  printf '%s' "${s//|/ }"
+}
+
+# Sanitize free-form values for RINEX header fields passed to RTKLIB convbin
+# (convbin expects fields separated by '/'). RINEX header fields are fixed width.
+sanitize_field() {
+  local s="${1:-}"
+  s="${s//$'\t'/ }"
+  while [[ "$s" == *"  "* ]]; do s="${s//  / }"; done
+  s="${s#"${s%%[! ]*}"}"  # ltrim spaces
+  s="${s%"${s##*[! ]}"}"  # rtrim spaces
+  s="${s//\//-}"
+  if (( ${#s} > 20 )); then
+    s="${s:0:20}"
+  fi
+  printf '%s' "$s"
+}
+
 read_stations() {
   awk '
     /^[[:space:]]*#/ {next}
     /^[[:space:]]*$/ {next}
-    { mp=$1; rid=$2; if (rid=="") rid=mp; print mp, rid }
+    {
+      mp=$1; rid=$2; if (rid=="") rid=mp;
+      x=$3; y=$4; z=$5;
+      rec_type=$6; rec_ver=$7; ant_type=$8;
+      ant_h=$9; ant_e=$10; ant_n=$11;
+      print mp, rid, x, y, z, rec_type, rec_ver, ant_type, ant_h, ant_e, ant_n
+    }
   ' "$STATIONS_FILE"
 }
 
@@ -119,6 +146,7 @@ collect_files_for_hour() {
 
   local -a epochs=()
   local i
+
   for ((i=edge_hours; i>=1; i--)); do epochs+=( $((hour_start_epoch - i*3600)) ); done
   epochs+=( "$hour_start_epoch" )
   for ((i=1; i<=edge_hours; i++)); do epochs+=( $((hour_start_epoch + i*3600)) ); done
@@ -136,35 +164,44 @@ collect_files_for_hour() {
     files+=( "$dir"/*_"$ymd"_"$hh"-*.rtcm )
   done
 
+  if ((${#files[@]}==0)); then
+    return 0
+  fi
   IFS=$'\n' files=($(printf '%s\n' "${files[@]}" | sed '/^$/d' | sort -u)); unset IFS
-  ((${#files[@]} > 0)) || return 0
   printf '%s\n' "${files[@]}"
 }
 
-# ---- Paramètres globaux ----
+# ---- Inputs & defaults ----
+
+OUT_ROOT="${RINEX_OUT_ROOT_HOURLY:-$PUB_ROOT/centipede_1s}"
+RINEX_VER="${RINEX_VERSION:-3.04}"
 INTERVAL="${RINEX_HOURLY_INTERVAL_S:-1}"
+EDGE="${RINEX_HOURLY_EDGE_HOURS:-${RTCM_EDGE_HOURS:-1}}"
+
+# Rate token
 if command -v rate_token >/dev/null 2>&1; then
   RATE="$(rate_token "$INTERVAL")"
 else
   RATE="$(rate_token_fallback "$INTERVAL")"
 fi
 
-RINEX_VER="${RINEX_VERSION:-3.04}"
-OUT_ROOT="${RINEX_OUT_ROOT_HOURLY:-$PUB_ROOT/centipede_1s}"
-FREQ="${CONVBIN_FREQ:-4}"
-EDGE="${RINEX_HOURLY_EDGE_HOURS:-1}"
+# Frequency mask (RTKLIB convbin -f)
+FREQ="${CONVBIN_FREQ:-${CONVBIN_FREQ_MASK:-4}}"
 
-TODAY="$(date -u +%F)"
+TODAY="$(date -u +%Y-%m-%d)"
 NOWH="$(date -u +%H)"
 
 process_station_hour() {
   local mp="$1"
   local rid="$2"
-  local HH="$3"
-  local hour_start_epoch="$4"
-  local year="$5"
-  local doy="$6"
-  local ymd_slash="$7"
+  local x="$3" y="$4" z="$5"
+  local rec_type_in="$6" rec_ver_in="$7" ant_type_in="$8"
+  local ant_h_in="$9" ant_e_in="${10}" ant_n_in="${11}"
+  local HH="${12}"
+  local hour_start_epoch="${13}"
+  local year="${14}"
+  local doy="${15}"
+  local ymd_slash="${16}"
 
   local out_dir="$OUT_ROOT/$year/$doy"
   mkdir -p "$out_dir"
@@ -192,17 +229,38 @@ process_station_hour() {
   log "CAT  $mp $DAY hour=$HH (${#files[@]} files)"
   cat "${files[@]}" > "$tmp_rtcm"
 
-  local ant_hgt
-  ant_hgt="${RINEX_ANT_HGT_DEFAULT:-0.0}"
-  local -a hd_args=()
-  [[ -n "${ant_hgt:-}" ]] && hd_args=(-hd "${ant_hgt}/0/0")
+  # Decode metadata
+  local rec_num ant_num rec_type rec_ver ant_type
+  rec_num="${RINEX_REC_NUM_DEFAULT:-UNKNOWN}"
+  ant_num="${RINEX_ANT_NUM_DEFAULT:-UNKNOWN}"
+
+  rec_type="$(decode_ws_token "${rec_type_in:-UNKNOWN}")"
+  rec_ver="$(decode_ws_token "${rec_ver_in:-UNKNOWN}")"
+  ant_type="$(decode_ws_token "${ant_type_in:-NONE|NONE}")"
+
+  local ant_h ant_e ant_n
+  ant_h="${ant_h_in:-${RINEX_ANT_HGT_DEFAULT:-0.0}}"
+  ant_e="${ant_e_in:-0.0}"
+  ant_n="${ant_n_in:-0.0}"
+
+  local -a hp_args=() hr_args=() ha_args=() hd_args=()
+  if [[ -n "${x:-}" && -n "${y:-}" && -n "${z:-}" ]]; then
+    hp_args=(-hp "${x}/${y}/${z}")
+  fi
+
+  hr_args=(-hr "$(sanitize_field "$rec_num")/$(sanitize_field "$rec_type")/$(sanitize_field "$rec_ver")")
+  ha_args=(-ha "$(sanitize_field "$ant_num")/$(sanitize_field "${ant_type:-NONE NONE}")")
+  hd_args=(-hd "${ant_h}/${ant_e}/${ant_n}")
 
   log "RUN  convbin $mp $DAY hour=$HH -> $base"
   if ! convbin "$tmp_rtcm" \
       -v "$RINEX_VER" -r rtcm3 \
       -hm "$rid" -hn "$mp" \
-      -f "$FREQ" \
+      "${hp_args[@]}" \
+      "${hr_args[@]}" \
+      "${ha_args[@]}" \
       "${hd_args[@]}" \
+      -f "$FREQ" \
       -os \
       -ti "$INTERVAL" -tt 0 \
       -ts "$ymd_slash" "${HH}:00:00" -te "$ymd_slash" "${HH}:59:59" \
@@ -248,12 +306,18 @@ for HH in $(seq -w 00 23); do
   ymd_slash="$(date -u -d "@$hour_start_epoch" +%Y/%m/%d)"
 
   for line in "${stations[@]}"; do
-    mp="$(awk '{print $1}' <<<"$line")"
-    rid="$(awk '{print $2}' <<<"$line")"
+    # stations.list is whitespace-separated; REC_TYPE/REC_VER/ANT_TYPE may contain '|'
+    read -r mp rid x y z rec_type rec_ver ant_type ant_h ant_e ant_n <<<"$line"
     [[ -n "${mp:-}" ]] || continue
     [[ -n "${rid:-}" ]] || rid="$mp"
 
-    process_station_hour "$mp" "$rid" "$HH" "$hour_start_epoch" "$year" "$doy" "$ymd_slash" &
+    process_station_hour \
+      "$mp" "$rid" \
+      "${x:-}" "${y:-}" "${z:-}" \
+      "${rec_type:-}" "${rec_ver:-}" "${ant_type:-}" \
+      "${ant_h:-}" "${ant_e:-}" "${ant_n:-}" \
+      "$HH" "$hour_start_epoch" "$year" "$doy" "$ymd_slash" &
+
     pids+=("$!")
     ((tasks++)) || true
 
@@ -267,11 +331,12 @@ for HH in $(seq -w 00 23); do
       pids=("${alive[@]}")
     done
   done
+
 done
 
 for pid in "${pids[@]}"; do
   wait "$pid" || true
+
 done
 
 log "DONE tasks=${tasks}"
-
