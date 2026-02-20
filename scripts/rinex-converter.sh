@@ -210,9 +210,44 @@ read_stations() {
   done
 }
 
-# Pick a writable temp directory (important on NFS/root_squash cases)
+# Retourne l'espace libre en MiB sur le filesystem contenant le chemin $1.
+# Utilise df -Pm (POSIX, unités MiB) pour être portable entre tmpfs et ext4.
+_avail_mb() {
+  df -Pm "$1" 2>/dev/null | awk 'NR==2 { print $4 }'
+}
+
+# Détecte si un chemin est sur un tmpfs (RAM) — utilisé pour les logs de diagnostic.
+_is_tmpfs() {
+  local path="${1:-}"
+  [[ -e "$path" ]] || return 1
+  # findmnt est plus fiable que /proc/mounts pour les bind-mounts Docker
+  if command -v findmnt &>/dev/null; then
+    findmnt -n -o FSTYPE --target "$path" 2>/dev/null | grep -q 'tmpfs'
+  else
+    # Fallback : lecture directe de /proc/mounts
+    awk -v p="$path" '$2==p && $3=="tmpfs"' /proc/mounts | grep -q tmpfs
+  fi
+}
+
+# Pick a writable temp directory with space validation (important on NFS/root_squash cases).
+#
+# Arg 1 : rtcm_dir      — répertoire RTCM de la station, utilisé comme dernier recours
+# Arg 2 : min_free_mb   — espace minimum exigé sur le fs candidat (MiB).
+#                         Par défaut : SHM_MIN_FREE_MB (env) ou 512 MiB.
+#                         Calibré pour un job individuel : RTCM edge (~27 Mo) +
+#                         RNX brut (~100-200 Mo) + CRX (~40 Mo) + marge = ~512 Mo.
+#
+# Ordre de priorité :
+#   1. TMP_ROOT (→ /dev/shm/converterXX si docker-compose configuré)
+#   2. $PUB_ROOT/tmp  (disque local ou NFS — fallback si /dev/shm saturé)
+#   3. $rtcm_dir/.tmp (co-localise les tmp avec les données sources — réduit les copies réseau)
+#   4. /tmp           (dernier recours absolu)
+#
+# Si aucun candidat ne satisfait l'espace minimum, on relance sans contrainte d'espace
+# (mode dégradé) plutôt que d'échouer silencieusement.
 pick_tmp_root() {
   local rtcm_dir="${1:-}"
+  local min_mb="${2:-${SHM_MIN_FREE_MB:-512}}"
   local candidates=()
 
   [[ -n "${TMP_ROOT:-}" ]] && candidates+=("$TMP_ROOT")
@@ -220,7 +255,37 @@ pick_tmp_root() {
   [[ -n "$rtcm_dir" ]] && candidates+=("$rtcm_dir/.tmp")
   candidates+=("/tmp")
 
-  local d
+  local d avail is_ram
+  for d in "${candidates[@]}"; do
+    mkdir -p "$d" 2>/dev/null || true
+    [[ -d "$d" && -w "$d" ]] || continue
+
+    avail="$(_avail_mb "$d")"
+    # avail vide = df a échoué (montage NFS inaccessible, etc.) → on skip
+    [[ -n "$avail" ]] || { logc WARN "pick_tmp_root: skip $d (df failed — mount unavailable?)"; continue; }
+
+    if (( avail >= min_mb )); then
+      # Log le type de stockage une seule fois pour la traçabilité
+      if _is_tmpfs "$d"; then
+        is_ram="RAM/tmpfs"
+      else
+        is_ram="disk"
+      fi
+      logc DEBUG "pick_tmp_root: using $d [${is_ram}, avail=${avail} MiB, min=${min_mb} MiB]"
+      echo "$d"
+      return 0
+    else
+      logc WARN "pick_tmp_root: skip $d (avail=${avail} MiB < min=${min_mb} MiB — $(
+        if [[ "$d" == /dev/shm* ]]; then echo 'shm saturé ? vérifier shm_size dans docker-compose.yml'
+        else echo 'espace disque faible'
+        fi
+      ))"
+    fi
+  done
+
+  # Mode dégradé : aucun candidat n'a assez de place.
+  # On relance sans contrainte d'espace pour ne pas bloquer toutes les conversions.
+  logc WARN "pick_tmp_root: aucun candidat avec ${min_mb} MiB libre — fallback sans contrainte (conversions possiblement lentes)"
   for d in "${candidates[@]}"; do
     mkdir -p "$d" 2>/dev/null || true
     if [[ -d "$d" && -w "$d" ]]; then
@@ -228,6 +293,7 @@ pick_tmp_root() {
       return 0
     fi
   done
+
   return 1
 }
 

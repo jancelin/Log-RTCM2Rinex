@@ -28,7 +28,10 @@ services:
       - FORCE_RINEX_HOURLY_ENABLE=true
       - FORCE_RINEX_DAILY_ENABLE=false
       - FORCE_CLEANUP_ENABLE=false
-      - FORCE_TMP_ROOT=/data/pub/tmp/converter1s
+      # Tmp sur /dev/shm (tmpfs RAM) pour éliminer la contention I/O disque/NFS.
+      # 7 jobs × ~200 Mo (rtcm_edge + rnx + crx) = ~1,4 Go peak → 3g de marge.
+      - FORCE_TMP_ROOT=/dev/shm/converter1s
+    shm_size: '3g'
     volumes:
       - ./data:/data
       - ./scripts:/opt/scripts:rw
@@ -53,7 +56,10 @@ services:
       - FORCE_RINEX_HOURLY_ENABLE=false
       - FORCE_RINEX_DAILY_ENABLE=true
       - FORCE_CLEANUP_ENABLE=true
-      - FORCE_TMP_ROOT=/data/pub/tmp/converter30s
+      # Tmp sur /dev/shm (tmpfs RAM) pour éliminer la contention I/O disque/NFS.
+      # 7 jobs × ~350 Mo (221 Mo rtcm/jour + rnx + crx) = ~2,5 Go peak → 5g de marge.
+      - FORCE_TMP_ROOT=/dev/shm/converter30s
+    shm_size: '5g'
     volumes:
       - ./data:/data
       - ./scripts:/opt/scripts:rw

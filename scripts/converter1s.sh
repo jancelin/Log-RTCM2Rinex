@@ -11,7 +11,10 @@ export FORCE_RINEX_HOURLY_ENABLE="${FORCE_RINEX_HOURLY_ENABLE:-true}"
 export FORCE_RINEX_DAILY_ENABLE="${FORCE_RINEX_DAILY_ENABLE:-false}"
 export FORCE_CLEANUP_ENABLE="${FORCE_CLEANUP_ENABLE:-false}"
 
-# Dedicated tmp root per converter service (helps debugging and avoids tmp contention)
-export FORCE_TMP_ROOT="${FORCE_TMP_ROOT:-/data/pub/tmp/${CONVERTER_NAME}}"
+# Tmp sur /dev/shm (tmpfs RAM) pour éliminer la contention I/O disque/NFS.
+# Taille shm_size allouée dans docker-compose.yml (2g pour converter1s).
+# Fallback automatique vers /data/pub/tmp si /dev/shm est indisponible ou saturé
+# (géré dans pick_tmp_root() de rinex-converter.sh).
+export FORCE_TMP_ROOT="${FORCE_TMP_ROOT:-/dev/shm/${CONVERTER_NAME}}"
 
 exec /opt/scripts/rinex-converter.sh
