@@ -143,18 +143,28 @@ dedup_rinex_epochs() {
   [[ "${RINEX_DEDUP_EPOCHS:-true}" == "true" ]] || return 0
   [[ -s "$f" ]] || return 0
 
+  # Passe unique : détection ET filtrage simultanés (voir commentaire dans rinex-converter.sh).
+  # Le compte de doublons est retourné sur stdout (END{print dup}).
+  # L'écriture du fichier filtré n'est effectuée (mv) que si dup > 0.
+  local dedup_tmp="${f}.dedup"
   local dup
-  dup="$(awk 'BEGIN{d=0}
-            /^>/{k=$2" "$3" "$4" "$5" "$6" "$7; if(seen[k]++){d++}}
-            END{print d}' "$f" 2>/dev/null || echo 0)"
+  dup=$(awk '
+    BEGIN { keep=1; dup=0 }
+    /^>/ {
+      k = $2 " " $3 " " $4 " " $5 " " $6 " " $7
+      if (seen[k]++) { keep=0; dup++ }
+      else           { keep=1 }
+    }
+    { if (keep) print > out }
+    END { print dup }
+  ' out="$dedup_tmp" "$f")
   [[ "${dup:-0}" =~ ^[0-9]+$ ]] || dup=0
 
   if (( dup > 0 )); then
     log "WARN duplicate epochs detected in $(basename "$f") (count=$dup) -> dedup"
-    awk 'BEGIN{keep=1}
-         /^>/{k=$2" "$3" "$4" "$5" "$6" "$7; if(seen[k]++){keep=0}else{keep=1}}
-         {if(keep)print}
-        ' "$f" > "${f}.dedup" && mv -f "${f}.dedup" "$f"
+    mv -f "$dedup_tmp" "$f"
+  else
+    rm -f "$dedup_tmp"
   fi
 }
 
@@ -174,10 +184,8 @@ collect_files_for_hour() {
   local ep y doy ymd hh dir
 
   for ep in "${epochs[@]}"; do
-    y="$(date -u -d "@$ep" +%Y)"
-    doy="$(date -u -d "@$ep" +%j)"
-    ymd="$(date -u -d "@$ep" +%Y-%m-%d)"
-    hh="$(date -u -d "@$ep" +%H)"
+    # 1 seul fork date par epoch (format combiné) — voir P5 dans rinex-converter.sh.
+    read -r y doy ymd hh <<< "$(date -u -d "@$ep" +'%Y %j %Y-%m-%d %H')"
     dir="$PUB_ROOT/rtcm_raw/$y/$doy/$mp"
     [[ -d "$dir" ]] || continue
     files+=( "$dir"/*_"$ymd"_"$hh"-*.rtcm )

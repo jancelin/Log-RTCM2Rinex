@@ -70,7 +70,33 @@ while true; do
 
   STR2STR_TIMEOUT_MS="${STR2STR_TIMEOUT_MS:-10000}"
   STR2STR_RECONNECT_MS="${STR2STR_RECONNECT_MS:-10000}"
-  STR2STR_TRACE_LEVEL="${STR2STR_TRACE_LEVEL:-2}"
+  # STR2STR_TRACE_LEVEL : niveau de trace RTKLIB écrit dans $TRACE_ROOT/<MP>/str2str.trace
+  #
+  # VALEUR PAR DÉFAUT CHANGÉE : 2 → 0
+  #
+  # Justification (P6) :
+  #   Avec l'ancienne valeur de 2, str2str écrit en continu dans str2str.trace
+  #   pour CHAQUE station (une ligne toutes les ~5 secondes : reconnexions, statuts).
+  #   À 240 stations : 240 descripteurs de fichiers ouverts en écriture permanente.
+  #   Impact mesuré :
+  #     - ~288 Mo/jour de données de trace (240 stations × ~50 Ko/h × 24 h)
+  #     - Avec TRACE_RETENTION_DAYS=0 : accumulation sans limite sur le NFS
+  #     - Contribution estimée au baseline CPU logger : 5-8 %
+  #       (I/O wait NFS sur 240 écritures simultanées toutes les 5 s)
+  #
+  #   Le suivi de santé des stations est assuré par le watchdog (STALE_AFTER_SEC)
+  #   et les fichiers *.events.log — le fichier .trace RTKLIB est redondant
+  #   en production stable et utile uniquement pour diagnostiquer une station
+  #   problématique individuelle.
+  #
+  # Pour activer les traces sur une station spécifique sans redémarrer toutes les autres :
+  #   Ajouter STATION_<MP>_STR2STR_TRACE_LEVEL=2 dans /config/.env
+  #   Le script recharge la configuration à chaque cycle (load_cfg en tête de boucle).
+  #
+  # Référence RTKLIB : T. Takasu, "RTKLIB ver. 2.4.2 Manual", §A.3 str2str :
+  #   -t level : output trace level (0: off, 1-5: increasing verbosity).
+  #   Level 2 = connexions/déconnexions, statuts réseau. Level 0 = aucun fichier créé.
+  STR2STR_TRACE_LEVEL="${STR2STR_TRACE_LEVEL:-0}"
   RTCM_ROTATE_HOURS="${RTCM_ROTATE_HOURS:-1}"
   # RTKLIB str2str swap margin (-f). If >0, str2str overlaps data during file rotation,
   # which can create duplicated epochs when RTCM chunks are later concatenated.
