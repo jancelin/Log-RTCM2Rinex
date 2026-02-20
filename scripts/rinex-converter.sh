@@ -301,8 +301,42 @@ atomic_write_gzip() {
   local src="${1:?}"
   local dst="${2:?}"
   local tmp="${dst}.tmp"
+
+  # Sélection du compresseur — résolu une fois par processus (variable globale cachée).
+  # Ordre de priorité :
+  #   1. pigz  — gzip parallèle (multi-thread), sortie bit-à-bit identique à gzip.
+  #              Produit des fichiers .gz lisibles par tout outil compatible gzip/zlib.
+  #   2. gzip  — fallback si l'image n'a pas encore été reconstruite avec pigz.
+  #
+  # Pourquoi pigz est plus rapide ici :
+  #   La compression gzip est la dernière étape d'un pipeline déjà parallélisé
+  #   (CONVERT_PARALLEL jobs simultanés). Chaque job exécute convbin → rnx2crx → gzip
+  #   séquentiellement. La phase de compression est donc DÉSYNCHRONISÉE entre jobs :
+  #   au pic 1 à 3 jobs compriment simultanément sur 8 cœurs.
+  #   pigz avec PIGZ_THREADS=2 utilise 2-6 threads au maximum → reste dans le budget CPU.
+  #
+  # Référence : M. Adler, "pigz: A Parallel Implementation of gzip",
+  #   https://zlib.net/pigz/ — sortie conforme RFC 1952 (gzip), section 2.2.
+
+  if [[ -z "${_GZIP_CMD:-}" ]]; then
+    if command -v pigz &>/dev/null; then
+      local threads="${PIGZ_THREADS:-2}"
+      local level="${GZIP_LEVEL:-6}"
+      # Validation défensive des paramètres numériques
+      [[ "$threads" =~ ^[1-9][0-9]*$ ]] || threads=2
+      [[ "$level"   =~ ^[1-9]$        ]] || level=6
+      _GZIP_CMD="pigz -p ${threads} -${level}"
+      logc INFO "compresseur: pigz (threads=${threads}, level=${level}) — fallback: gzip disponible"
+    else
+      _GZIP_CMD="gzip"
+      logc WARN "compresseur: gzip (pigz absent — reconstruire l'image Docker pour activer pigz)"
+    fi
+  fi
+
   rm -f "$tmp"
-  gzip -c "$src" > "$tmp"
+  # L'écriture se fait d'abord vers $tmp (même filesystem que $dst)
+  # puis mv atomique pour éviter qu'un lecteur NFS ne voie un fichier .gz partiel.
+  $_GZIP_CMD -c "$src" > "$tmp"
   mv -f "$tmp" "$dst"
 }
 

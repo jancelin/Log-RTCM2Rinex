@@ -6,7 +6,7 @@ ENV TZ=UTC
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates wget build-essential git \
     bash coreutils findutils grep sed gawk \
-    tzdata gzip \
+    tzdata gzip pigz \
     inotify-tools \
     gosu \
  && rm -rf /var/lib/apt/lists/*

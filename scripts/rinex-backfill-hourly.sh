@@ -90,8 +90,27 @@ atomic_write_gzip() {
   local src="${1:?}"
   local dst="${2:?}"
   local tmp="${dst}.tmp"
+
+  # Sélection du compresseur (résolue une fois par session de backfill).
+  # pigz produit une sortie gzip bit-à-bit identique à gzip (RFC 1952),
+  # compatible avec tout outil gunzip, zcat, nginx, etc.
+  # Fallback transparent sur gzip si pigz absent (image non reconstruite).
+  if [[ -z "${_GZIP_CMD:-}" ]]; then
+    if command -v pigz &>/dev/null; then
+      local threads="${PIGZ_THREADS:-2}"
+      local level="${GZIP_LEVEL:-6}"
+      [[ "$threads" =~ ^[1-9][0-9]*$ ]] || threads=2
+      [[ "$level"   =~ ^[1-9]$        ]] || level=6
+      _GZIP_CMD="pigz -p ${threads} -${level}"
+      echo "[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] backfill-hourly INFO compresseur: pigz (threads=${threads}, level=${level})" >&2
+    else
+      _GZIP_CMD="gzip"
+      echo "[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] backfill-hourly WARN compresseur: gzip (pigz absent — reconstruire l'image Docker)" >&2
+    fi
+  fi
+
   rm -f "$tmp"
-  gzip -c "$src" > "$tmp"
+  $_GZIP_CMD -c "$src" > "$tmp"
   mv -f "$tmp" "$dst"
 }
 
