@@ -166,6 +166,42 @@ On force le **téléchargement** en séparant les routes nginx :
 
 Résultat : un clic sur un fichier déclenche un download, tandis que les dossiers restent navigables.
 
+### WebStat (métriques légères) — `/webstat/` (protégé par mot de passe)
+
+Le service `stat` calcule régulièrement des métriques (volumes / nb fichiers / nb stations) à partir des `*.crx.gz`
+présents sous `data/pub/centipede_1s/` et `data/pub/centipede_30s/`.
+
+Il écrit :
+
+- `data/pub/stats/metrics_daily.csv` (série temporelle par jour DOY et par produit)
+- `data/pub/stats/metrics_latest.json` (snapshot)
+
+Le service `web` expose ensuite une page HTML simple :
+
+- `http://<host>:${NGINX_PORT}/webstat/`
+
+#### Activer le mot de passe
+
+Crée le fichier `config/webstat.htpasswd` (Basic Auth nginx) :
+
+```bash
+sudo apt-get install -y apache2-utils
+./scripts/gen-webstat-htpasswd.sh webstat
+```
+
+Puis redémarre nginx :
+
+```bash
+docker compose up -d web
+```
+
+#### Paramètres
+
+Dans `config/.env` :
+
+- `WEBSTAT_SCAN_DAYS` : fenêtre glissante recalculée (défaut 60 jours)
+- `WEBSTAT_SLEEP_SECONDS` : période de recalcul (défaut 1800 s)
+
 
 ---
 

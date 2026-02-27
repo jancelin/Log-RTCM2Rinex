@@ -4,3 +4,4 @@
 
 # Local secrets
 /config/.env
+/config/webstat.htpasswd

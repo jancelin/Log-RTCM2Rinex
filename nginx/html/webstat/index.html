@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Centipede RINEX — WebStat</title>
+  <style>
+    /* ─── reset / base ─────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --c-bg:        #f7f8fa;
+      --c-surface:   #ffffff;
+      --c-border:    #e2e5ea;
+      --c-text:      #1a1d23;
+      --c-muted:     #6b7280;
+      --c-accent1:   #2563eb;   /* 1s  – bleu */
+      --c-accent30:  #16a34a;   /* 30s – vert */
+      --c-accent-unk:#9333ea;   /* unknown */
+      --c-header:    #1e293b;
+      --radius:      10px;
+      --shadow:      0 1px 3px rgba(0,0,0,.08);
+      font-size: 14px;
+    }
+    body { background: var(--c-bg); color: var(--c-text);
+           font-family: system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,sans-serif;
+           min-height: 100vh; }
+
+    /* ─── header ────────────────────────────────────────────── */
+    header {
+      background: var(--c-header); color: #f1f5f9;
+      padding: 14px 24px;
+      display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    }
+    header h1 { font-size: 17px; font-weight: 700; letter-spacing: -.3px; flex: 1; }
+    #meta { font-size: 11px; color: #94a3b8; white-space: nowrap; }
+    #refresh-btn {
+      background: #334155; border: none; color: #cbd5e1; border-radius: 6px;
+      padding: 5px 12px; font-size: 12px; cursor: pointer; white-space: nowrap;
+    }
+    #refresh-btn:hover { background: #475569; }
+    #countdown { font-size: 11px; color: #64748b; min-width: 60px; text-align: right; }
+
+    /* ─── layout ────────────────────────────────────────────── */
+    main { max-width: 1300px; margin: 0 auto; padding: 20px 20px 40px; }
+
+    /* ─── section headers ───────────────────────────────────── */
+    .section-title {
+      font-size: 13px; font-weight: 600; color: var(--c-muted);
+      text-transform: uppercase; letter-spacing: .06em;
+      margin: 24px 0 10px;
+    }
+
+    /* ─── product legend pills ──────────────────────────────── */
+    .legend { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+    .pill {
+      padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 600;
+      border: 2px solid transparent; cursor: pointer; user-select: none;
+      transition: opacity .15s;
+    }
+    .pill-1s  { background:#dbeafe; color:#1d4ed8; border-color:#93c5fd; }
+    .pill-30s { background:#dcfce7; color:#15803d; border-color:#86efac; }
+    .pill.inactive { opacity: .35; }
+
+    /* ─── KPI windows row ───────────────────────────────────── */
+    .windows { display: flex; gap: 10px; flex-wrap: wrap; }
+    .win-card {
+      background: var(--c-surface); border: 1px solid var(--c-border);
+      border-radius: var(--radius); box-shadow: var(--shadow);
+      padding: 14px 18px; flex: 1; min-width: 220px;
+    }
+    .win-label { font-size: 11px; font-weight: 700; text-transform: uppercase;
+                 letter-spacing: .07em; color: var(--c-muted); margin-bottom: 10px; }
+    .win-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 16px; }
+    .kpi-row  { display: flex; flex-direction: column; }
+    .kpi-name { font-size: 10px; color: var(--c-muted); }
+    .kpi-val  { font-size: 20px; font-weight: 700; line-height: 1.2; }
+    .kpi-val.c1s  { color: var(--c-accent1); }
+    .kpi-val.c30s { color: var(--c-accent30); }
+    .kpi-sub  { font-size: 10px; color: var(--c-muted); }
+
+    /* ─── chart ─────────────────────────────────────────────── */
+    .chart-wrap {
+      background: var(--c-surface); border: 1px solid var(--c-border);
+      border-radius: var(--radius); box-shadow: var(--shadow);
+      padding: 16px; position: relative;
+    }
+    .chart-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+    .chart-controls label { font-size: 12px; color: var(--c-muted); }
+    select, .chart-controls select {
+      border: 1px solid var(--c-border); border-radius: 6px;
+      padding: 4px 8px; font-size: 12px; background: white;
+    }
+    canvas#chart {
+      display: block; width: 100%; height: auto;
+      border-radius: 6px;
+    }
+    .chart-legend { display: flex; gap: 16px; justify-content: center; margin-top: 8px; font-size: 11px; }
+    .chart-legend-item { display: flex; align-items: center; gap: 4px; }
+    .chart-legend-dot { width: 10px; height: 10px; border-radius: 2px; }
+
+    /* ─── table ─────────────────────────────────────────────── */
+    .table-wrap {
+      background: var(--c-surface); border: 1px solid var(--c-border);
+      border-radius: var(--radius); box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    table { border-collapse: collapse; width: 100%; font-size: 13px; }
+    thead tr { background: #f8fafc; }
+    th { padding: 9px 12px; text-align: left; font-size: 11px;
+         text-transform: uppercase; letter-spacing: .05em; color: var(--c-muted);
+         border-bottom: 1px solid var(--c-border); font-weight: 600; }
+    td { padding: 8px 12px; border-bottom: 1px solid #f1f5f9; }
+    tbody tr:last-child td { border-bottom: none; }
+    tbody tr:hover { background: #f8fafc; }
+    .badge {
+      display: inline-block; padding: 1px 7px; border-radius: 20px;
+      font-size: 11px; font-weight: 700;
+    }
+    .badge-1s  { background:#dbeafe; color:#1d4ed8; }
+    .badge-30s { background:#dcfce7; color:#15803d; }
+    .badge-unk { background:#f3e8ff; color:#7e22ce; }
+    .num { text-align: right; font-variant-numeric: tabular-nums; }
+
+    /* ─── spinner / error ───────────────────────────────────── */
+    #loader { text-align: center; padding: 60px; color: var(--c-muted); font-size: 14px; }
+    .err { background:#fee2e2; color:#991b1b; border-radius:8px; padding:12px 16px;
+           margin-top:16px; font-size:13px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>📡 Centipede RINEX — WebStat</h1>
+  <span id="meta">Chargement…</span>
+  <button id="refresh-btn" onclick="loadData()">↺ Actualiser</button>
+  <span id="countdown"></span>
+</header>
+
+<main id="app">
+  <div id="loader">Chargement des métriques…</div>
+</main>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════
+   Utilitaires
+══════════════════════════════════════════════════════════════ */
+function fmtBytes(n) {
+  if (!n || isNaN(n)) return "0 B";
+  const u = ["B","KB","MB","GB","TB","PB"];
+  let i = 0, x = +n;
+  while (x >= 1024 && i < u.length - 1) { x /= 1024; i++; }
+  return x.toFixed(i >= 2 ? 2 : 1) + "\u202f" + u[i];
+}
+function fmtNum(n) {
+  return (+n || 0).toLocaleString("fr-FR");
+}
+function parseCSV(text) {
+  const lines = text.trim().split(/\r?\n/);
+  const hdr = lines.shift().split(",");
+  return lines.filter(Boolean).map(l => {
+    const c = l.split(","), o = {};
+    hdr.forEach((h, i) => o[h] = c[i]);
+    o.files    = +o.files;
+    o.stations = +o.stations;
+    o.bytes    = +o.bytes;
+    return o;
+  });
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   État global
+══════════════════════════════════════════════════════════════ */
+let gLatest = null;     // parsed metrics_latest.json
+let gCsvRows = [];      // parsed metrics_daily.csv
+let gVisible = { "1s": true, "30s": true };
+
+let countdownSec = 0;
+let countdownTimer = null;
+
+/* ═══════════════════════════════════════════════════════════════
+   Chargement des données
+══════════════════════════════════════════════════════════════ */
+async function loadData() {
+  try {
+    const [jsonResp, csvResp] = await Promise.all([
+      fetch("/webstat-data/metrics_latest.json", { cache: "no-store" }),
+      fetch("/webstat-data/metrics_daily.csv",   { cache: "no-store" }),
+    ]);
+    if (!jsonResp.ok) throw new Error("metrics_latest.json : HTTP " + jsonResp.status);
+    if (!csvResp.ok)  throw new Error("metrics_daily.csv : HTTP "   + csvResp.status);
+
+    gLatest  = await jsonResp.json();
+    gCsvRows = parseCSV(await csvResp.text());
+
+    renderAll();
+    startCountdown(+(gLatest.sleep_seconds || 1800));
+  } catch (e) {
+    renderError(String(e));
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Countdown auto-refresh
+══════════════════════════════════════════════════════════════ */
+function startCountdown(seconds) {
+  clearInterval(countdownTimer);
+  countdownSec = seconds;
+  const el = document.getElementById("countdown");
+  const tick = () => {
+    const m = Math.floor(countdownSec / 60);
+    const s = countdownSec % 60;
+    el.textContent = `↺ dans ${m}:${String(s).padStart(2,"0")}`;
+    if (--countdownSec < 0) { loadData(); }
+  };
+  tick();
+  countdownTimer = setInterval(tick, 1000);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Render principal
+══════════════════════════════════════════════════════════════ */
+function renderAll() {
+  const app = document.getElementById("app");
+
+  // Mise à jour du meta header
+  document.getElementById("meta").textContent =
+    "Généré (UTC) : " + (gLatest.generated_at_utc || "?")
+    + "  |  scan = " + gLatest.scan_days + "j"
+    + "  |  " + fmtNum(gLatest.files_scanned) + " fichiers scannés";
+
+  app.innerHTML = "";
+
+  // ─ Légende produits (toggle) ─────────────────────────────────
+  const legend = div("legend");
+  for (const prod of ["1s", "30s"]) {
+    const p = el("button", `pill pill-${prod}${gVisible[prod] ? "" : " inactive"}`, prodLabel(prod));
+    p.onclick = () => { gVisible[prod] = !gVisible[prod]; renderAll(); };
+    legend.appendChild(p);
+  }
+  app.appendChild(legend);
+
+  // ─ Fenêtres KPI ──────────────────────────────────────────────
+  app.appendChild(el("div", "section-title", "Résumé par fenêtre temporelle"));
+  app.appendChild(renderWindows());
+
+  // ─ Graphique évolution ────────────────────────────────────────
+  app.appendChild(el("div", "section-title", "Évolution du volume quotidien"));
+  app.appendChild(renderChart());
+
+  // ─ Tableau historique ─────────────────────────────────────────
+  app.appendChild(el("div", "section-title", "Historique quotidien (60 derniers jours)"));
+  app.appendChild(renderTable());
+}
+
+/* ─── KPI windows ─────────────────────────────────────────────── */
+function renderWindows() {
+  const wins = gLatest.windows || {};
+  const wrap = div("windows");
+  for (const [winKey, winLabel] of [["today","Aujourd'hui"],["7d","7 jours"],["30d","30 jours"],["all","Total"]]) {
+    const data = wins[winKey] || {};
+    const card = div("win-card");
+    card.appendChild(el("div","win-label", winLabel));
+    const grid = div("win-grid");
+    for (const prod of ["1s","30s"]) {
+      if (!gVisible[prod]) continue;
+      const v = data[prod] || {};
+      const row = div("kpi-row");
+      row.appendChild(el("span","kpi-name", prodLabel(prod)));
+      const val = el("span","kpi-val c" + prod, fmtBytes(v.bytes || 0));
+      row.appendChild(val);
+      const sub = el("span","kpi-sub",
+        fmtNum(v.files || 0) + " fichiers · " + fmtNum(v.stations || 0) + " stations·j"
+        + (v.days > 1 ? " · " + v.days + " jours" : ""));
+      row.appendChild(sub);
+      grid.appendChild(row);
+    }
+    card.appendChild(grid);
+    wrap.appendChild(card);
+  }
+  return wrap;
+}
+
+/* ─── Chart ──────────────────────────────────────────────────── */
+let chartWinVal = "60";
+
+function renderChart() {
+  const wrap = div("chart-wrap");
+
+  // Controls
+  const ctrl = div("chart-controls");
+  ctrl.appendChild(elText("label", "Fenêtre : "));
+  const sel = el("select");
+  for (const [v, l] of [["14","14 jours"],["30","30 jours"],["60","60 jours"],["90","90 jours"]]) {
+    const opt = el("option"); opt.value = v; opt.textContent = l;
+    if (v === chartWinVal) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  sel.onchange = () => { chartWinVal = sel.value; drawChart(canvas); };
+  ctrl.appendChild(sel);
+
+  ctrl.appendChild(elText("label", " Métrique : "));
+  const metSel = el("select","","");
+  metSel.id = "chart-metric";
+  for (const [v, l] of [["bytes","Volume (octets)"],["files","Nb fichiers"],["stations","Stations"]]) {
+    const opt = el("option"); opt.value = v; opt.textContent = l;
+    metSel.appendChild(opt);
+  }
+  metSel.onchange = () => drawChart(canvas);
+  ctrl.appendChild(metSel);
+  wrap.appendChild(ctrl);
+
+  const canvas = document.createElement("canvas");
+  canvas.id = "chart";
+  canvas.width  = 1200;
+  canvas.height = 320;
+  wrap.appendChild(canvas);
+
+  const legEnd = div("chart-legend");
+  for (const prod of ["1s","30s"]) {
+    if (!gVisible[prod]) continue;
+    const item = div("chart-legend-item");
+    const dot = div("chart-legend-dot");
+    dot.style.background = prod === "1s" ? "#2563eb" : "#16a34a";
+    item.appendChild(dot);
+    item.appendChild(elText("span", prodLabel(prod)));
+    legEnd.appendChild(item);
+  }
+  wrap.appendChild(legEnd);
+
+  // Dessiner après insertion dans le DOM
+  setTimeout(() => drawChart(canvas), 0);
+  return wrap;
+}
+
+function drawChart(canvas) {
+  const metric = (document.getElementById("chart-metric") || {}).value || "bytes";
+  const winDays = +chartWinVal;
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+
+  const PAD_L = 70, PAD_R = 16, PAD_T = 20, PAD_B = 36;
+  const cw = W - PAD_L - PAD_R;
+  const ch = H - PAD_T - PAD_B;
+
+  // Récupérer les séries depuis le CSV (toutes dates, filtrées côté chart)
+  const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - winDays + 1);
+  const cutoffStr = cutoff.toISOString().slice(0, 10);
+
+  // Construire un index de dates
+  const dateSet = new Set();
+  const byProdDate = {};
+  for (const row of gCsvRows) {
+    if (row.date < cutoffStr) continue;
+    dateSet.add(row.date);
+    const k = row.product;
+    if (!byProdDate[k]) byProdDate[k] = {};
+    byProdDate[k][row.date] = row[metric];
+  }
+  const dates = [...dateSet].sort();
+
+  if (dates.length === 0) {
+    ctx.fillStyle = "#94a3b8"; ctx.font = "14px system-ui";
+    ctx.fillText("Aucune donnée dans la fenêtre sélectionnée", PAD_L + 20, H / 2);
+    return;
+  }
+
+  // Calcul du max global
+  let globalMax = 0;
+  for (const prod of ["1s","30s"]) {
+    if (!gVisible[prod]) continue;
+    for (const d of dates) {
+      const v = +(byProdDate[prod]?.[d] || 0);
+      if (v > globalMax) globalMax = v;
+    }
+  }
+  if (globalMax === 0) globalMax = 1;
+
+  // ── grille Y ──
+  ctx.strokeStyle = "#e5e7eb"; ctx.lineWidth = 1;
+  const steps = 4;
+  ctx.font = "11px system-ui"; ctx.fillStyle = "#9ca3af"; ctx.textAlign = "right";
+  for (let i = 0; i <= steps; i++) {
+    const y = PAD_T + ch - (i / steps) * ch;
+    ctx.beginPath(); ctx.moveTo(PAD_L, y); ctx.lineTo(W - PAD_R, y); ctx.stroke();
+    const val = (i / steps) * globalMax;
+    ctx.fillText(metric === "bytes" ? fmtBytes(val) : fmtNum(Math.round(val)), PAD_L - 4, y + 4);
+  }
+
+  // ── séries ──
+  const colors = { "1s": "#2563eb", "30s": "#16a34a" };
+  const fills  = { "1s": "rgba(37,99,235,.12)", "30s": "rgba(22,163,74,.12)" };
+
+  for (const prod of ["1s","30s"]) {
+    if (!gVisible[prod]) continue;
+    const color = colors[prod];
+    const fillC = fills[prod];
+    const pts = dates.map((d, i) => ({
+      x: PAD_L + (i / Math.max(dates.length - 1, 1)) * cw,
+      y: PAD_T + ch - ((+(byProdDate[prod]?.[d] || 0)) / globalMax) * ch,
+    }));
+
+    // Remplissage
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, PAD_T + ch);
+    pts.forEach(p => ctx.lineTo(p.x, p.y));
+    ctx.lineTo(pts[pts.length-1].x, PAD_T + ch);
+    ctx.closePath();
+    ctx.fillStyle = fillC;
+    ctx.fill();
+
+    // Ligne
+    ctx.beginPath();
+    pts.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+    ctx.strokeStyle = color; ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+
+  // ── axe X (dates) ──
+  ctx.fillStyle = "#9ca3af"; ctx.font = "10px system-ui"; ctx.textAlign = "center";
+  const maxLabels = Math.min(dates.length, Math.floor(cw / 60));
+  const step = Math.max(1, Math.floor(dates.length / maxLabels));
+  for (let i = 0; i < dates.length; i += step) {
+    const x = PAD_L + (i / Math.max(dates.length - 1, 1)) * cw;
+    const label = dates[i].slice(5);   // "MM-DD"
+    ctx.fillText(label, x, H - PAD_B + 14);
+  }
+
+  // ── axe ──
+  ctx.strokeStyle = "#d1d5db"; ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(PAD_L, PAD_T); ctx.lineTo(PAD_L, PAD_T + ch + 1);
+  ctx.lineTo(W - PAD_R, PAD_T + ch + 1);
+  ctx.stroke();
+}
+
+/* ─── Table ──────────────────────────────────────────────────── */
+function renderTable() {
+  const wrap = div("table-wrap");
+  const tbl  = el("table");
+
+  const thead = el("thead");
+  const hrow  = el("tr");
+  for (const h of ["Date","DOY","Produit","Stations","Fichiers","Volume"]) {
+    hrow.appendChild(el("th", "", h));
+  }
+  thead.appendChild(hrow); tbl.appendChild(thead);
+
+  const tbody = el("tbody");
+  const rows = gCsvRows
+    .filter(r => gVisible[r.product])
+    .sort((a, b) => b.date.localeCompare(a.date) || a.product.localeCompare(b.product))
+    .slice(0, 120);
+
+  for (const r of rows) {
+    const tr = el("tr");
+    td(tr, r.date);
+    td(tr, r.doy_label || "—");
+    const badgeCell = el("td");
+    badgeCell.appendChild(el("span", "badge badge-" + (r.product === "1s" ? "1s" : r.product === "30s" ? "30s" : "unk"), prodLabel(r.product)));
+    tr.appendChild(badgeCell);
+    tdNum(tr, fmtNum(r.stations));
+    tdNum(tr, fmtNum(r.files));
+    tdNum(tr, fmtBytes(r.bytes));
+    tbody.appendChild(tr);
+  }
+  tbl.appendChild(tbody);
+  wrap.appendChild(tbl);
+  return wrap;
+}
+
+/* ─── Error ──────────────────────────────────────────────────── */
+function renderError(msg) {
+  const app = document.getElementById("app");
+  app.innerHTML = "";
+  app.appendChild(el("div","err", "❌ Erreur de chargement : " + msg
+    + "\n\nVérifiez que le service stat est démarré et que les fichiers metrics_latest.json / metrics_daily.csv existent dans /data/pub/stats/."));
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   DOM helpers
+══════════════════════════════════════════════════════════════ */
+function div(cls)     { return el("div", cls); }
+function el(tag, cls, text) {
+  const e = document.createElement(tag || "div");
+  if (cls)  e.className = cls;
+  if (text) e.textContent = text;
+  return e;
+}
+function elText(tag, text) { const e = el(tag); e.textContent = text; return e; }
+function td(tr, text)    { tr.appendChild(el("td","",text)); }
+function tdNum(tr, text) { const c = el("td","num",text); tr.appendChild(c); }
+function prodLabel(p)    { return p === "1s" ? "⚡ 1s" : p === "30s" ? "🌿 30s" : "❓ " + p; }
+
+/* ═══════════════════════════════════════════════════════════════
+   Bootstrap
+══════════════════════════════════════════════════════════════ */
+loadData();
+</script>
+</body>
+</html>

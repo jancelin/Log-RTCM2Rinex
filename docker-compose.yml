@@ -1,4 +1,6 @@
 services:
+
+  # ─── RTCM logger ──────────────────────────────────────────────────────────
   logger:
     build: .
     image: centipede-logger:local
@@ -17,7 +19,7 @@ services:
       retries: 3
       start_period: 30s
 
-  # Hourly RINEX (1s) converter (previous hour) — independent service
+  # ─── Convertisseur 1s (horaire, heure précédente) ─────────────────────────
   converter1s:
     build: .
     image: centipede-logger:local
@@ -28,8 +30,6 @@ services:
       - FORCE_RINEX_HOURLY_ENABLE=true
       - FORCE_RINEX_DAILY_ENABLE=false
       - FORCE_CLEANUP_ENABLE=false
-      # Tmp sur /dev/shm (tmpfs RAM) pour éliminer la contention I/O disque/NFS.
-      # 7 jobs × ~200 Mo (rtcm_edge + rnx + crx) = ~1,4 Go peak → 3g de marge.
       - FORCE_TMP_ROOT=/dev/shm/converter1s
     shm_size: '3g'
     volumes:
@@ -45,7 +45,7 @@ services:
       retries: 3
       start_period: 30s
 
-  # Daily RINEX (30s) converter (yesterday) — independent service
+  # ─── Convertisseur 30s (quotidien, veille) ────────────────────────────────
   converter30s:
     build: .
     image: centipede-logger:local
@@ -56,8 +56,6 @@ services:
       - FORCE_RINEX_HOURLY_ENABLE=false
       - FORCE_RINEX_DAILY_ENABLE=true
       - FORCE_CLEANUP_ENABLE=true
-      # Tmp sur /dev/shm (tmpfs RAM) pour éliminer la contention I/O disque/NFS.
-      # 7 jobs × ~350 Mo (221 Mo rtcm/jour + rnx + crx) = ~2,5 Go peak → 5g de marge.
       - FORCE_TMP_ROOT=/dev/shm/converter30s
     shm_size: '5g'
     volumes:
@@ -73,6 +71,7 @@ services:
       retries: 3
       start_period: 30s
 
+  # ─── Nginx (publication + webstat) ────────────────────────────────────────
   web:
     image: nginx:1.27-alpine
     container_name: centipede_web
@@ -83,14 +82,35 @@ services:
       - ./data/pub:/srv/pub:ro
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
       - ./nginx/html:/usr/share/nginx/html:ro
+      # ⚠️  Créer ce fichier AVANT de démarrer (voir scripts/gen-webstat-htpasswd.sh)
+      - ./config/webstat.htpasswd:/etc/nginx/.htpasswd-webstat:ro
     read_only: true
     tmpfs:
       - /var/cache/nginx
       - /var/run
       - /tmp
 
-  # Optional: refresh /config/stations.list from PostgreSQL every hour
-  # Enable with: docker compose --profile querydb up -d --build
+  # ─── Service stat : métriques légères toutes les 30 min ───────────────────
+  # Calcule des agrégats par (date, produit) sur les *.crx.gz de PUB_ROOT,
+  # et écrit dans /data/pub/stats/ :
+  #   metrics_latest.json   → résumés today / 7j / 30j / all
+  #   metrics_daily.csv     → historique par jour
+  # La page /webstat/ (nginx) les expose en lecture (chemin /webstat-data/).
+  stat:
+    build: ./stat
+    image: centipede-stat:local
+    container_name: centipede_stat
+    restart: unless-stopped
+    environment:
+      - TZ=Europe/Paris
+      - PUB_ROOT=/srv/pub
+      - STATS_DIR=/srv/pub/stats
+      - SCAN_DAYS=${WEBSTAT_SCAN_DAYS:-60}
+      - SLEEP_SECONDS=${WEBSTAT_SLEEP_SECONDS:-1800}
+    volumes:
+      - ./data/pub:/srv/pub:rw
+
+  # ─── querydb (optionnel) ──────────────────────────────────────────────────
   querydb:
     build: ./querydb
     image: centipede-querydb:local
